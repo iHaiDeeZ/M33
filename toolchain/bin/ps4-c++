@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Compiler wrapper for autotools/meson builds: compiles for PS4 and, when
+# asked to link, produces a PS4 executable with the OpenOrbis runtime.
+source "$(dirname "$(readlink -f "$0")")/../env.sh"
+
+lang_cxx=0
+[[ "$(basename "$0")" == *++ ]] && lang_cxx=1
+
+compile_only=0
+for a in "$@"; do
+    case "$a" in -c|-E|-S|-M|-MM|--version|-v|-dumpversion|-dumpmachine|-print-*) compile_only=1 ;; esac
+done
+
+cxxflags=()
+if (( lang_cxx )); then
+    cxxflags=(-nostdinc++ -isystem "$PS4_SYSROOT/include/c++/v1")
+    cc="$PS4_CXX"
+else
+    cc="$PS4_CC"
+fi
+# shellcheck disable=SC2206
+base=($PS4_BASE_FLAGS -isystem "$PS4_SYSROOT/include")
+
+if (( compile_only )) || (( $# == 0 )); then
+    exec "$cc" "${cxxflags[@]}" "${base[@]}" "$@"
+fi
+
+libs=()
+if (( lang_cxx )); then
+    libs=("$PS4_SYSROOT/lib/libc++.a" "$PS4_SYSROOT/lib/libc++abi.a" "$OPENORBIS/lib/libunwind.a")
+fi
+exec "$cc" "${cxxflags[@]}" "${base[@]}" -fuse-ld=lld -nostdlib -Wl,--no-dynamic-linker -Wl,-m,elf_x86_64 -Wl,-pie \
+    -Wl,--script,"$(dirname "$(readlink -f "$0")")/../ps4-link.x" -Wl,--eh-frame-hdr \
+    "$OPENORBIS/lib/crt1.o" "$OPENORBIS/lib/crti.o" \
+    -L"$PS4_SYSROOT/lib" -L"$OPENORBIS/usr/lib" -L"$OPENORBIS/lib" \
+    "$@" \
+    -Wl,--start-group "${libs[@]}" "$PS4_SYSROOT/lib/libdolphinps4_rt.a" -lkernel -lc -lSceLibcInternal "$OPENORBIS/lib/libclang_rt.builtins-x86_64.a" -Wl,--end-group \
+    "$OPENORBIS/lib/crtn.o"

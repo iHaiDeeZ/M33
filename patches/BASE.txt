@@ -1,0 +1,4 @@
+Upstream PPSSPP the PS4 patch applies to (cloned with submodules by scripts/clone-ppsspp.sh):
+url: https://github.com/hrydgard/ppsspp
+base: 5f2d4afbdced51ac056af25a05fd182a1175b558
+date: 2026-10-17 (Merge pull request #22617 from hrydgard/medievil-fire)

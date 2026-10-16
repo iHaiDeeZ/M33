@@ -1,0 +1,7 @@
+modules/
+*.pkg
+*.elf
+*.oelf
+out/
+build/
+*.tar
