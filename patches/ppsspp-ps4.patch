@@ -1461,10 +1461,10 @@ index 0000000..1c86573
 +}
 diff --git a/ps4/PS4VulkanWSI.cpp b/ps4/PS4VulkanWSI.cpp
 new file mode 100644
-index 0000000..34ed88e
+index 0000000..3f201a5
 --- /dev/null
 +++ b/ps4/PS4VulkanWSI.cpp
-@@ -0,0 +1,560 @@
+@@ -0,0 +1,583 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -1534,6 +1534,7 @@ index 0000000..34ed88e
 +
 +VkInstance sInstance = VK_NULL_HANDLE;
 +VkPhysicalDevice sPhysicalDevice = VK_NULL_HANDLE;
++VkDevice sDevice = VK_NULL_HANDLE;  // for QueueSubmit
 +int sVideo = -1;
 +OrbisKernelEqueue sFlipQueue;
 +u64 sFlipsSubmitted = 0;
@@ -1642,7 +1643,10 @@ index 0000000..34ed88e
 +	copy.enabledExtensionCount = (u32)names.size();
 +	copy.ppEnabledExtensionNames = names.data();
 +	sPhysicalDevice = physicalDevice;
-+	return real(physicalDevice, &copy, alloc, device);
++	const VkResult r = real(physicalDevice, &copy, alloc, device);
++	if (r == VK_SUCCESS)
++		sDevice = *device;
++	return r;
 +}
 +
 +VKAPI_ATTR VkResult VKAPI_CALL CreateHeadlessSurfaceEXT(VkInstance, const VkHeadlessSurfaceCreateInfoEXT *, const VkAllocationCallbacks *, VkSurfaceKHR *surface)
@@ -1909,12 +1913,13 @@ index 0000000..34ed88e
 +	WaitImageOffScreen(sc->imageCount);
 +	*index = sc->nextImage;
 +	sc->nextImage = (sc->nextImage + 1) % sc->imageCount;
-+	if (semaphore || fence)
++	// The image is free now (waited for above). The acquire semaphore is never signalled: there is one
++	// in-order queue, and QueueSubmit below drops semaphores (an empty submit signalling one loses the
++	// device on the PS4 - Crema, Resonance). A fence, if asked for, is signalled by an empty submit.
++	(void)semaphore;
++	if (fence)
 +	{
-+		// signal the acquire semaphore/fence right away: the image is free
 +		VkSubmitInfo si { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-+		si.signalSemaphoreCount = semaphore ? 1 : 0;
-+		si.pSignalSemaphores = &semaphore;
 +		const VkResult r = Device<PFN_vkQueueSubmit>(device, "vkQueueSubmit")(GraphicsQueue(device), 1, &si, fence);
 +		if (r != VK_SUCCESS)
 +			ERROR_LOG(Log::G3D, "PS4WSI: acquire signal submit failed: %d", r);
@@ -1929,21 +1934,10 @@ index 0000000..34ed88e
 +	for (u32 i = 0; i < info->swapchainCount; i++)
 +	{
 +		auto sc = (PS4Swapchain *)info->pSwapchains[i];
-+		auto queueSubmit = Device<PFN_vkQueueSubmit>(sc->device, "vkQueueSubmit");
-+		// consume the wait semaphores (one queue, in order: the rendering was submitted before)
-+		std::vector<VkPipelineStageFlags> stages(info->waitSemaphoreCount, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-+		VkSubmitInfo si { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-+		si.waitSemaphoreCount = i == 0 ? info->waitSemaphoreCount : 0;
-+		si.pWaitSemaphores = info->pWaitSemaphores;
-+		si.pWaitDstStageMask = stages.data();
++		// the wait semaphores were never signalled (QueueSubmit drops them): one queue, in order, the
++		// rendering was submitted before this flip
 +		const u32 buffer = (u32)sc->firstBuffer + info->pImageIndices[i];
 +		const s64 arg = (s64)(sFlipsSubmitted + 1);
-+		if (si.waitSemaphoreCount)
-+		{
-+			const VkResult sr = queueSubmit(queue, 1, &si, VK_NULL_HANDLE);
-+			if (sr != VK_SUCCESS)
-+				ERROR_LOG(Log::G3D, "PS4WSI: present semaphore submit failed: %d", sr);
-+		}
 +		// the flip goes to the GPU behind the frame's commands: no CPU wait for the GPU or vblank
 +		int r = ac_ps4_submit_flip(sVideo, buffer, sc->flipMode, arg);
 +		const bool gpuFlip = r == 0;
@@ -1976,6 +1970,34 @@ index 0000000..34ed88e
 +	return result;
 +}
 +
++// Submits without their semaphores. M33 (PPSSPP) waits for the acquire semaphore and signals a
++// render-complete one for the present in every frame; on the PS4 the semaphores only lose the device,
++// and with one in-order queue (and the CPU wait for the image in AcquireNextImageKHR) they add nothing.
++VKAPI_ATTR VkResult VKAPI_CALL QueueSubmit(VkQueue queue, u32 count, const VkSubmitInfo *submits, VkFence fence)
++{
++	static PFN_vkQueueSubmit real = nullptr;
++	if (!real)
++		real = Device<PFN_vkQueueSubmit>(sDevice, "vkQueueSubmit");
++	VkSubmitInfo stripped[8];
++	std::vector<VkSubmitInfo> many;
++	VkSubmitInfo *copy = stripped;
++	if (count > 8)
++	{
++		many.resize(count);
++		copy = many.data();
++	}
++	for (u32 i = 0; i < count; i++)
++	{
++		copy[i] = submits[i];
++		copy[i].waitSemaphoreCount = 0;
++		copy[i].pWaitSemaphores = nullptr;
++		copy[i].pWaitDstStageMask = nullptr;
++		copy[i].signalSemaphoreCount = 0;
++		copy[i].pSignalSemaphores = nullptr;
++	}
++	return real(queue, count, copy, fence);
++}
++
 +PFN_vkVoidFunction Intercept(const char *name)
 +{
 +#define PS4WSI_ENTRY(fn) if (strcmp(name, "vk" #fn) == 0) return (PFN_vkVoidFunction)&fn
@@ -1994,6 +2016,7 @@ index 0000000..34ed88e
 +	PS4WSI_ENTRY(GetSwapchainImagesKHR);
 +	PS4WSI_ENTRY(AcquireNextImageKHR);
 +	PS4WSI_ENTRY(QueuePresentKHR);
++	PS4WSI_ENTRY(QueueSubmit);
 +#undef PS4WSI_ENTRY
 +	return nullptr;
 +}
