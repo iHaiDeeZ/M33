@@ -572,6 +572,13 @@ int ps4_replace_malloc_stats(void* out) {
     return 0;
 }
 int ps4_replace_malloc_stats_fast(void* out) { return ps4_replace_malloc_stats(out); }
+// What the heap (and its overflow) has used up to: for a periodic line in the app's boot trace.
+size_t ps4_heap_footprint() {
+    size_t bytes = mspace_footprint(getHeap());
+    if (mspace overflow = __atomic_load_n(&g_overflow, __ATOMIC_ACQUIRE))
+        bytes += mspace_footprint(overflow);
+    return bytes;
+}
 size_t ps4_replace_malloc_usable_size(void* ptr) { return ptr ? mspace_usable_size(ptr) : 0; }
 
 // Large anonymous mmaps (--wrap=mmap): Dolphin's JIT code buffers, DSP ARAM, FIFO, ... would

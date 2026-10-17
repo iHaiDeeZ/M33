@@ -716,6 +716,45 @@ index 4b9f88d..f53b3aa 100644
  			pspFileSystem.Mount("umd:", blockSystem);
  		} else {
  			ERROR_LOG(Log::Loader, "mountIso failed: %s", error_string->c_str());
+diff --git a/Core/SaveState.cpp b/Core/SaveState.cpp
+index 6be636c..46b088c 100644
+--- a/Core/SaveState.cpp
++++ b/Core/SaveState.cpp
+@@ -130,6 +130,20 @@ int g_screenshotFailures;
+ 		return CChunkFileReader::MeasureAndSavePtr(state, &data);
+ 	}
+ 
++	CChunkFileReader::Error SaveToBuffer(u8 *buffer, size_t capacity, size_t *size) {
++		SaveStart state;
++		u8 *ptr = buffer;
++		size_t savedSize = capacity;
++		const CChunkFileReader::Error error = CChunkFileReader::MeasureAndSavePtr(state, &ptr, &savedSize);
++		*size = error == CChunkFileReader::ERROR_NONE ? savedSize : 0;
++		return error;
++	}
++
++	CChunkFileReader::Error LoadFromBuffer(u8 *buffer, size_t size, std::string *errorString) {
++		SaveStart state;
++		return CChunkFileReader::LoadPtr(buffer, size, state, errorString);
++	}
++
+ 	CChunkFileReader::Error LoadFromRam(std::vector<u8> &data, std::string *errorString) {
+ 		SaveStart state;
+ 		return CChunkFileReader::LoadPtr(&data[0], data.size(), state, errorString);
+diff --git a/Core/SaveState.h b/Core/SaveState.h
+index 746c4c3..600c30b 100644
+--- a/Core/SaveState.h
++++ b/Core/SaveState.h
+@@ -97,6 +97,9 @@ namespace SaveState {
+ 
+ 	CChunkFileReader::Error SaveToRam(std::vector<u8> &state);
+ 	CChunkFileReader::Error LoadFromRam(std::vector<u8> &state, std::string *errorString);
++	// M33: the same into / from a caller's buffer (the PS4 rewind's, which keeps out of the app heap).
++	CChunkFileReader::Error SaveToBuffer(u8 *buffer, size_t capacity, size_t *size);
++	CChunkFileReader::Error LoadFromBuffer(u8 *buffer, size_t size, std::string *errorString);
+ 
+ 	// For testing / automated tests.  Runs a save state verification pass (async.)
+ 	// Warning: callback will be called on a different thread.
 diff --git a/GPU/Common/PresentationCommon.cpp b/GPU/Common/PresentationCommon.cpp
 index d541b43..c03148b 100644
 --- a/GPU/Common/PresentationCommon.cpp
@@ -2368,10 +2407,10 @@ index 0000000..4cd600c
 +}  // namespace PS4Keyboard
 diff --git a/ps4/PS4Main.cpp b/ps4/PS4Main.cpp
 new file mode 100644
-index 0000000..bb5798a
+index 0000000..f30f77f
 --- /dev/null
 +++ b/ps4/PS4Main.cpp
-@@ -0,0 +1,405 @@
+@@ -0,0 +1,417 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -2445,6 +2484,7 @@ index 0000000..bb5798a
 +
 +extern "C" void ps4_boot_trace(const char *line);  // port/ps4_crashlog.cpp
 +extern "C" void ps4_sampler_start();                // port/ps4_sampler.cpp
++extern "C" size_t ps4_heap_footprint();             // port/ps4_runtime.cpp
 +
 +// L1 held while the app starts: no XMB this time, even with Start in the XMB on (UI/NativeApp.cpp).
 +bool m33_skip_xmb = false;
@@ -2617,7 +2657,18 @@ index 0000000..bb5798a
 +
 +	// The main thread polls the pads, about 240 times a second (not while the keyboard is up: it
 +	// has the pad then), and hands typed text back.
++	auto lastHeapLine = std::chrono::steady_clock::now();
++	size_t lastHeapMiB = 0;
 +	while (!(g_quitRequested || g_restartRequested)) {
++		// The heap's use, once a minute when it changed (a leak shows up in the boot trace)
++		if (std::chrono::steady_clock::now() - lastHeapLine > std::chrono::seconds(60)) {
++			lastHeapLine = std::chrono::steady_clock::now();
++			const size_t mib = ps4_heap_footprint() >> 20;
++			if (mib != lastHeapMiB) {
++				lastHeapMiB = mib;
++				Trace("heap: " + std::to_string(mib) + " MiB used");
++			}
++		}
 +		PS4Keyboard::Update();
 +		if (!PS4Keyboard::IsOpen())
 +			PS4Pad::Poll();
@@ -3106,10 +3157,10 @@ index 0000000..2f80279
 +}  // namespace PS4Pad
 diff --git a/ps4/PS4Rewind.cpp b/ps4/PS4Rewind.cpp
 new file mode 100644
-index 0000000..c39dac7
+index 0000000..ca143d8
 --- /dev/null
 +++ b/ps4/PS4Rewind.cpp
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,358 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3130,10 +3181,14 @@ index 0000000..c39dac7
 +// As RetroArch's state manager (libretro-common's state_manager.c): a snapshot is taken every few
 +// frames, but only the newest is kept whole; each older one is kept as its difference to the one
 +// after it (the 2 KB blocks that changed, zstd-compressed), so many seconds of PSP states fit.
-+// Going back undoes those differences one at a time, newest first, showing each for as many frames
-+// as were between them, so it rewinds at the speed it was played. The differences live in a block
-+// of direct memory of their own (not the app's heap); the oldest go when it's full.
++// Going back undoes those differences one at a time, newest first, at twice the speed it was
++// played (by the clock: a frame going back costs a snapshot load).
 +// (PPSSPP's own rewind keeps 20 whole-ish states seconds apart and jumps back one per press.)
++//
++// All of it lives in one block of direct memory, mapped once: the two whole snapshots and the
++// compression output (fixed buffers), and the differences (an allocator of their own, the oldest
++// dropped when it's full). Nothing of it goes through the app heap: 40 MB snapshot buffers being
++// reallocated there fragmented it until it ran out (v00.18 crashed with bad_alloc after ~30 min).
 +
 +#include <algorithm>
 +#include <atomic>
@@ -3141,7 +3196,6 @@ index 0000000..c39dac7
 +#include <deque>
 +#include <string>
 +#include <thread>
-+#include <vector>
 +
 +#include <zstd.h>
 +
@@ -3176,6 +3230,13 @@ index 0000000..c39dac7
 +constexpr size_t kBlock = 2048;
 +constexpr size_t MB = 1024 * 1024;
 +constexpr size_t LARGE_PAGE = 0x200000;
++// A whole snapshot: the PSP's RAM (up to 64 MB) and VRAM, and the rest of its state.
++constexpr size_t kSnapshotCap = 80 * MB;
++
++struct Buffer {
++	u8 *data = nullptr;
++	size_t size = 0;
++};
 +
 +struct Delta {
 +	void *data;
@@ -3183,16 +3244,18 @@ index 0000000..c39dac7
 +	size_t rawSize;  // uncompressed
 +};
 +
-+void *g_space = nullptr;
-+bool g_spaceTried = false;
++bool g_initTried = false;
++bool g_ready = false;
++void *g_space = nullptr;  // the differences' allocator
 +std::deque<Delta> g_deltas;  // oldest first; each one turns the state after it into its own
 +
-+std::vector<u8> g_cur;   // the newest snapshot, whole (while going back: the one shown)
-+std::vector<u8> g_next;  // the one being taken (while going back: a scratch buffer)
++Buffer g_cur;   // the newest snapshot, whole (while going back: the one shown)
++Buffer g_next;  // the one being taken (while going back: a scratch buffer)
++u8 *g_zout = nullptr;  // compression output, kSnapshotCap
 +bool g_haveCur = false;
 +std::thread g_worker;
 +ZSTD_CCtx *g_cctx = nullptr;
-+std::vector<u8> g_zout;
++ZSTD_DCtx *g_dctx = nullptr;
 +
 +int g_frames = 0;
 +double g_stepClock = 0.0;  // wall time the steps going back are owed from
@@ -3203,12 +3266,13 @@ index 0000000..c39dac7
 +bool g_endShown = false;
 +std::atomic<bool> g_active{ false };
 +
-+bool InitSpace() {
-+	if (g_spaceTried)
-+		return g_space != nullptr;
-+	g_spaceTried = true;
++bool Init() {
++	if (g_initTried)
++		return g_ready;
++	g_initTried = true;
++	const size_t fixed = 3 * kSnapshotCap;
 +	// Leave the rest of the direct memory to the GPU (Vulkan's allocations come from it too).
-+	for (size_t mb : { 256, 192, 128 }) {
++	for (size_t mb : { 448, 384, 336 }) {
 +		const size_t len = mb * MB;
 +		off_t phys = 0;
 +		if (sceKernelAllocateDirectMemory(0, (off_t)sceKernelGetDirectMemorySize(), len, LARGE_PAGE, 0, &phys) != 0)
@@ -3218,11 +3282,18 @@ index 0000000..c39dac7
 +			sceKernelReleaseDirectMemory(phys, len);
 +			continue;
 +		}
-+		g_space = create_mspace_with_base(addr, len, 1);
-+		if (g_space) {
-+			NOTICE_LOG(Log::SaveState, "Rewind: %d MiB of direct memory for the snapshots", (int)mb);
-+			return true;
-+		}
++		u8 *base = (u8 *)addr;
++		g_cur.data = base;
++		g_next.data = base + kSnapshotCap;
++		g_zout = base + 2 * kSnapshotCap;
++		g_space = create_mspace_with_base(base + fixed, len - fixed, 1);
++		g_cctx = ZSTD_createCCtx();
++		g_dctx = ZSTD_createDCtx();
++		if (!g_space || !g_cctx || !g_dctx)
++			break;
++		g_ready = true;
++		NOTICE_LOG(Log::SaveState, "Rewind: %d MiB of direct memory (%d MiB for the differences)", (int)mb, (int)((len - fixed) / MB));
++		return true;
 +	}
 +	WARN_LOG(Log::SaveState, "Rewind: no direct memory for the snapshots, rewind is off");
 +	return false;
@@ -3253,9 +3324,8 @@ index 0000000..c39dac7
 +void Store(const u8 *data, size_t size, size_t rawSize) {
 +	void *p;
 +	while (!(p = mspace_malloc(g_space, size))) {
-+		if (g_deltas.empty()) {
++		if (g_deltas.empty())
 +			return;
-+		}
 +		mspace_free(g_space, g_deltas.front().data);
 +		g_deltas.pop_front();
 +	}
@@ -3265,24 +3335,18 @@ index 0000000..c39dac7
 +
 +// What turns newer back into older: older's size, then each block of older that newer doesn't
 +// have (its index, then its bytes), compressed as one zstd frame.
-+void Encode(const std::vector<u8> &older, const std::vector<u8> &newer) {
-+	if (!g_cctx)
-+		g_cctx = ZSTD_createCCtx();
++void Encode(const Buffer &older, const Buffer &newer) {
 +	ZSTD_CCtx_reset(g_cctx, ZSTD_reset_session_only);
 +	ZSTD_CCtx_setParameter(g_cctx, ZSTD_c_compressionLevel, 1);
-+	size_t zpos = 0;
++	ZSTD_outBuffer out{ g_zout, kSnapshotCap, 0 };
 +	size_t rawSize = 0;
 +	bool ok = true;
 +	auto feed = [&](const void *src, size_t n, ZSTD_EndDirective end) {
 +		ZSTD_inBuffer in{ src, n, 0 };
 +		while (ok) {
-+			if (g_zout.size() - zpos < 128 * 1024)
-+				g_zout.resize(std::max(g_zout.size() * 2, zpos + MB));
-+			ZSTD_outBuffer out{ g_zout.data(), g_zout.size(), zpos };
 +			const size_t r = ZSTD_compressStream2(g_cctx, &out, &in, end);
-+			zpos = out.pos;
-+			if (ZSTD_isError(r)) {
-+				ok = false;
++			if (ZSTD_isError(r) || (out.pos == out.size && (end == ZSTD_e_end ? r != 0 : in.pos < in.size))) {
++				ok = false;  // (or it didn't fit: a difference as big as a whole snapshot)
 +			} else if (end == ZSTD_e_end ? r == 0 : in.pos == in.size) {
 +				break;
 +			}
@@ -3291,52 +3355,51 @@ index 0000000..c39dac7
 +	};
 +
 +	u8 word[4];
-+	Put32(word, (u32)older.size());
++	Put32(word, (u32)older.size);
 +	feed(word, 4, ZSTD_e_continue);
-+	for (size_t at = 0; at < older.size() && ok; at += kBlock) {
-+		const size_t n = std::min(kBlock, older.size() - at);
-+		if (at + n <= newer.size() && memcmp(&older[at], &newer[at], n) == 0)
++	for (size_t at = 0; at < older.size && ok; at += kBlock) {
++		const size_t n = std::min(kBlock, older.size - at);
++		if (at + n <= newer.size && memcmp(older.data + at, newer.data + at, n) == 0)
 +			continue;
 +		Put32(word, (u32)(at / kBlock));
 +		feed(word, 4, ZSTD_e_continue);
-+		feed(&older[at], n, ZSTD_e_continue);
++		feed(older.data + at, n, ZSTD_e_continue);
 +	}
 +	feed(nullptr, 0, ZSTD_e_end);
-+	if (ok) {
-+		Store(g_zout.data(), zpos, rawSize);
++	if (ok && rawSize <= kSnapshotCap) {
++		Store(g_zout, out.pos, rawSize);
 +	} else {
 +		ClearDeltas();  // the older ones can't be reached without this one
 +	}
-+	// Don't hold on to a big scene change's buffer.
-+	if (g_zout.size() > 16 * MB)
-+		std::vector<u8>().swap(g_zout);
 +}
 +
 +void Capture() {
 +	Join();
 +	const double start = time_now_d();
-+	if (SaveState::SaveToRam(g_next) != CChunkFileReader::ERROR_NONE)
++	if (SaveState::SaveToBuffer(g_next.data, kSnapshotCap, &g_next.size) != CChunkFileReader::ERROR_NONE) {
++		WARN_LOG(Log::SaveState, "Rewind: a snapshot didn't fit in %d MiB", (int)(kSnapshotCap / MB));
 +		return;
++	}
 +	g_captureMs += (time_now_d() - start) * 1000.0;
 +	if (++g_captures == 300) {
 +		size_t bytes = 0;
 +		for (const Delta &d : g_deltas)
 +			bytes += d.size;
 +		NOTICE_LOG(Log::SaveState, "Rewind: snapshot %.1f MiB, %.1f ms each; %d kept (%.1f s), %.0f KiB each",
-+			g_cur.size() / (double)MB, g_captureMs / g_captures, (int)g_deltas.size(), g_deltas.size() * kInterval / 60.0,
++			g_next.size / (double)MB, g_captureMs / g_captures, (int)g_deltas.size(), g_deltas.size() * kInterval / 60.0,
 +			g_deltas.empty() ? 0.0 : bytes / 1024.0 / g_deltas.size());
 +		g_captures = 0;
 +		g_captureMs = 0.0;
 +	}
 +	if (!g_haveCur) {
-+		g_cur.swap(g_next);
++		std::swap(g_cur, g_next);
 +		g_haveCur = true;
 +		return;
 +	}
 +	g_worker = std::thread([] {
 +		SetCurrentThreadName("M33Rewind");
 +		Encode(g_cur, g_next);
-+		g_cur.swap(g_next);
++		std::swap(g_cur, g_next);
 +	});
 +}
 +
@@ -3347,17 +3410,20 @@ index 0000000..c39dac7
 +		return false;
 +	const Delta d = g_deltas.back();
 +	g_deltas.pop_back();
-+	g_next.resize(d.rawSize);
-+	const size_t r = ZSTD_decompress(g_next.data(), d.rawSize, d.data, d.size);
++	const size_t r = ZSTD_decompressDCtx(g_dctx, g_next.data, kSnapshotCap, d.data, d.size);
 +	mspace_free(g_space, d.data);
 +	if (ZSTD_isError(r) || r != d.rawSize || r < 4) {
 +		ERROR_LOG(Log::SaveState, "Rewind: a snapshot didn't decompress");
 +		ClearDeltas();
 +		return false;
 +	}
-+	const u8 *p = g_next.data();
++	const u8 *p = g_next.data;
 +	const size_t oldSize = Get32(p);
-+	g_cur.resize(oldSize);
++	if (oldSize > kSnapshotCap) {
++		ClearDeltas();
++		return false;
++	}
++	g_cur.size = oldSize;  // (a grown part is all in the difference: those blocks differed)
 +	for (size_t at = 4; at + 4 <= r;) {
 +		const size_t off = (size_t)Get32(p + at) * kBlock;
 +		at += 4;
@@ -3366,7 +3432,7 @@ index 0000000..c39dac7
 +		const size_t n = std::min(kBlock, oldSize - off);
 +		if (at + n > r)
 +			break;
-+		memcpy(&g_cur[off], p + at, n);
++		memcpy(g_cur.data + off, p + at, n);
 +		at += n;
 +	}
 +	return true;
@@ -3376,7 +3442,7 @@ index 0000000..c39dac7
 +
 +void M33Rewind_Frame(bool held) {
 +	// A savestate load like any other: not in hardcore mode.
-+	if (Achievements::HardcoreModeActive() || !InitSpace()) {
++	if (Achievements::HardcoreModeActive() || !Init()) {
 +		g_active = false;
 +		return;
 +	}
@@ -3411,7 +3477,7 @@ index 0000000..c39dac7
 +		}
 +		std::string error;
 +		const double loadStart = time_now_d();
-+		const CChunkFileReader::Error loaded = SaveState::LoadFromRam(g_cur, &error);
++		const CChunkFileReader::Error loaded = SaveState::LoadFromBuffer(g_cur.data, g_cur.size, &error);
 +		g_loadMs += (time_now_d() - loadStart) * 1000.0;
 +		g_loads++;
 +		if (loaded != CChunkFileReader::ERROR_NONE) {
@@ -3446,8 +3512,8 @@ index 0000000..c39dac7
 +	Join();
 +	if (g_space)
 +		ClearDeltas();
-+	std::vector<u8>().swap(g_cur);
-+	std::vector<u8>().swap(g_next);
++	g_cur.size = 0;
++	g_next.size = 0;
 +	g_haveCur = false;
 +	g_rewinding = false;
 +	g_active = false;

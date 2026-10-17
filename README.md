@@ -30,7 +30,9 @@ Status: **v00.01 builds and packages; not yet tested on a console.**
 - Rewind (`ps4/PS4Rewind.cpp`), as RetroArch's: hold L2 and the game plays backwards, let go and it
   carries on, at twice the speed it was played (by the clock, not frames: a frame going back costs a
   snapshot load). A snapshot every 6 frames; only the newest is whole, the older ones are compressed
-  differences (2 KB blocks, zstd) in 256 MiB of direct memory of their own, the oldest dropped.
+  differences (2 KB blocks, zstd). All of it, the whole snapshots included, is in one block of
+  direct memory of its own (up to 448 MiB), never the app heap: reallocating 40 MB buffers there
+  fragmented it into a bad_alloc crash (v00.18). The boot trace logs the heap's use once a minute.
   Off in RetroAchievements hardcore mode.
 - Video and audio decoding: FFmpeg 7.1 (the rpcs3 port's PS4 build: H.264, ATRAC3/3+, MP3, AAC).
 - UI: PPSSPP's own (controller friendly, device type TV), in the console's language. Text fields
