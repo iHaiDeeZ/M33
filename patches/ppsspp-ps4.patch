@@ -610,10 +610,20 @@ index df985bc..5bf2ed4 100644
  
  void UIBackgroundShutdown() {
 diff --git a/UI/FirmwareScreen.cpp b/UI/FirmwareScreen.cpp
-index 444036b..68a859c 100644
+index 444036b..a3d9cc8 100644
 --- a/UI/FirmwareScreen.cpp
 +++ b/UI/FirmwareScreen.cpp
-@@ -118,6 +118,13 @@ void FirmwareScreen::CreateSettingsViews(UI::ViewGroup *parent) {
+@@ -27,6 +27,9 @@
+ #include "Common/UI/View.h"
+ #include "Common/UI/ViewGroup.h"
+ 
++#include "Common/File/FileUtil.h"
++#include "Common/Net/HTTPRequest.h"
++#include "Common/System/OSD.h"
+ #include "Core/Config.h"
+ #include "Core/System.h"
+ #include "Core/Util/PathUtil.h"
+@@ -118,12 +121,28 @@ void FirmwareScreen::CreateSettingsViews(UI::ViewGroup *parent) {
  		LaunchVSH();
  	});
  	launch->SetEnabled(!gameRunning && info_.hasVsh && FirmwareVersionSupportsVSH(info_.version));
@@ -627,6 +637,78 @@ index 444036b..68a859c 100644
  
  	if (info_.hasVsh && !FirmwareVersionSupportsVSH(info_.version)) {
  		parent->Add(new NoticeView(NoticeLevel::WARN, sy->T("XMB unsupported"),
+ 			sy->T("XMBUnsupportedVersion", "Only firmware 6.61 can boot the XMB so far")));
+ 	}
+ 
++#if PPSSPP_PLATFORM(PS4)
++	// M33: no file browser on the PS4. Fetch Sony's own 6.61 updater from its update server instead.
++	Choice *download = parent->Add(new Choice(sy->T("Download PSP firmware 6.61 from Sony"), ImageID("I_DOWNLOAD")));
++	download->OnClick.Add([this](UI::EventParams &) {
++		DownloadFromSony();
++	});
++	download->SetEnabled(!gameRunning);
++#endif
++
+ 	if (System_GetPropertyBool(SYSPROP_HAS_FILE_BROWSER)) {
+ 		Choice *install = parent->Add(new Choice(iz->T("Install PSP firmware update"), ImageID("I_FOLDER_UPLOAD")));
+ 		install->OnClick.Add([this](UI::EventParams &) {
+@@ -167,6 +186,42 @@ void FirmwareScreen::LaunchVSH() {
+ 	System_PostUIMessage(UIMessage::REQUEST_GAME_BOOT, (nandRoot_ / "flash0/vsh/module/vshmain.prx").ToString());
+ }
+ 
++#if PPSSPP_PLATFORM(PS4)
++// Sony's PSP system update 6.61, from its update server (plain HTTP; the folder name is the file's
++// MD5). Downloaded once to <memstick>/firmware, then installed with PPSSPP's own installer.
++static const char *const kSonyFirmwareUrl =
++	"http://du01.psp.update.playstation.org/update/psp/image/us/2014_1212_6be8878f475ac5b1a499b95ab2f7d301/EBOOT.PBP";
++static const u64 kSonyFirmwareSize = 32580549;
++
++void FirmwareScreen::DownloadFromSony() {
++	auto sy = GetI18NCategory(I18NCat::SYSTEM);
++	const Path dir = GetSysDirectory(DIRECTORY_MEMSTICK_ROOT) / "firmware";
++	const Path file = dir / "PSP661_EBOOT.PBP";
++	ScreenManager *sm = screenManager();
++	auto install = [sm, file]() {
++		sm->push(new InstallUpdateScreen(file, "PSP 6.61", false, kSonyFirmwareSize));
++	};
++	if (File::GetFileSize(file) == kSonyFirmwareSize) {
++		install();
++		return;
++	}
++	File::CreateFullPath(dir);
++	File::Delete(file);
++	g_OSD.Show(OSDType::MESSAGE_INFO, sy->T("Downloading PSP firmware 6.61 from Sony..."), 3.0f, "m33fw");
++	g_DownloadManager.StartDownload(kSonyFirmwareUrl, file, http::RequestFlags::ProgressBar, nullptr, "psp661",
++		[install, file](http::Request &req) {
++			auto sy = GetI18NCategory(I18NCat::SYSTEM);
++			if (req.ResultCode() == 200 && File::GetFileSize(file) == kSonyFirmwareSize) {
++				install();
++			} else {
++				ERROR_LOG(Log::Loader, "PSP firmware download failed: HTTP %d, %lld bytes", req.ResultCode(), (long long)File::GetFileSize(file));
++				File::Delete(file);
++				g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Couldn't download the PSP firmware. Check the console's internet connection."), 6.0f, "m33fw");
++			}
++		});
++}
++#endif
++
+ void FirmwareScreen::BrowseForUpdater() {
+ 	auto iz = GetI18NCategory(I18NCat::INSTALLZIP);
+ 	System_BrowseForFile(GetRequesterToken(), iz->T("Install PSP firmware update"), BrowseFileType::BOOTABLE,
+diff --git a/UI/FirmwareScreen.h b/UI/FirmwareScreen.h
+index 9f3e495..da47ce4 100644
+--- a/UI/FirmwareScreen.h
++++ b/UI/FirmwareScreen.h
+@@ -46,6 +46,9 @@ class FirmwareScreen : public UITwoPaneBaseDialogScreen {
+ 	void LaunchVSH();
+ 	void BrowseForUpdater();
+ 	void AskToErase();
++#if PPSSPP_PLATFORM(PS4)
++	void DownloadFromSony();
++#endif
+ 
+ 	Path nandRoot_;
+ 	InstalledFirmwareInfo info_;
 diff --git a/UI/MainScreen.cpp b/UI/MainScreen.cpp
 index 03d80c5..99e25b5 100644
 --- a/UI/MainScreen.cpp

@@ -80,7 +80,9 @@ Settings > System > PSP Firmware > Launch XMB. M33 adds **Start in the XMB** the
 straight into it after its opening, and leaving it (or L3 + R3 > Exit to menu) comes back to M33's
 menus. Hold **L1** while M33 starts to skip it once.
 
-Installing a firmware (Sony's files, not included): open a game's info screen and choose Install
+Installing a firmware (Sony's files, not included): **Download PSP firmware 6.61 from Sony** on
+the same screen fetches Sony's official updater from its update server (32.6 MB, kept in
+`/data/March33/firmware`) and installs it. Or open a game's info screen and choose Install
 PSP firmware update (most discs carry an updater; Settings also offers to do it from discs by
 itself), or put an official update's `EBOOT.PBP` in a folder under `/data/March33/games` and select
 it in the game browser. It is installed to `/data/March33/PSP/NAND`.
