@@ -510,10 +510,22 @@ index 93654cf..fe1e1a9 100644
  	// Use gameID_EmulatedTimestamp for filename
  	std::string discID = g_paramSFO.GetDiscID();
 diff --git a/Core/Config.cpp b/Core/Config.cpp
-index a15dc9e..73b2f86 100644
+index a15dc9e..6491d44 100644
 --- a/Core/Config.cpp
 +++ b/Core/Config.cpp
-@@ -328,6 +328,7 @@ static const ConfigSetting generalSettings[] = {
+@@ -267,7 +267,11 @@ static const ConfigSetting generalSettings[] = {
+ 	ConfigSetting("Language", SETTING(g_Config, sLanguageIni), &DefaultLangRegion, CfgFlag::DEFAULT),
+ 	ConfigSetting("ForceLagSync2", SETTING(g_Config, bForceLagSync), false, CfgFlag::PER_GAME),
+ 	ConfigSetting("DiscordRichPresence", SETTING(g_Config, bDiscordRichPresence), false, CfgFlag::DEFAULT),
++#if PPSSPP_PLATFORM(PS4)
++	ConfigSetting("UISound", SETTING(g_Config, bUISound), true, CfgFlag::DEFAULT),  // M33: menu sounds
++#else
+ 	ConfigSetting("UISound", SETTING(g_Config, bUISound), false, CfgFlag::DEFAULT),
++#endif
+ 
+ 	ConfigSetting("DisableHTTPS", SETTING(g_Config, bDisableHTTPS), false, CfgFlag::DONT_SAVE),
+ 	ConfigSetting("AutoLoadSaveState", SETTING(g_Config, iAutoLoadSaveState), 0, CfgFlag::PER_GAME),
+@@ -328,6 +332,7 @@ static const ConfigSetting generalSettings[] = {
  	ConfigSetting("CompressSymbols", SETTING(g_Config, bCompressSymbols), true, CfgFlag::DEFAULT),
  	ConfigSetting("CacheFullIsoInRam", SETTING(g_Config, bCacheFullIsoInRam), false, CfgFlag::PER_GAME),
  	ConfigSetting("AutoUpgradeFirmware", SETTING(g_Config, bAutoUpgradeFirmware), true, CfgFlag::DEFAULT),
@@ -521,7 +533,7 @@ index a15dc9e..73b2f86 100644
  	ConfigSetting("RemoteISOPort", SETTING(g_Config, iRemoteISOPort), 0, CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOServer", SETTING(g_Config, sLastRemoteISOServer), "", CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOPort", SETTING(g_Config, iLastRemoteISOPort), 0, CfgFlag::DEFAULT),
-@@ -455,6 +456,9 @@ static int DefaultInternalResolution() {
+@@ -455,6 +460,9 @@ static int DefaultInternalResolution() {
  	return scale;
  #elif PPSSPP_PLATFORM(IOS)
  	return 2;
@@ -531,7 +543,7 @@ index a15dc9e..73b2f86 100644
  #else
  	return 0;
  #endif
-@@ -1150,7 +1154,12 @@ static const ConfigSetting upgradeSettings[] = {
+@@ -1150,7 +1158,12 @@ static const ConfigSetting upgradeSettings[] = {
  };
  
  static const ConfigSetting themeSettings[] = {
@@ -544,7 +556,7 @@ index a15dc9e..73b2f86 100644
  };
  
  static const ConfigSetting vrSettings[] = {
-@@ -1403,6 +1412,14 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
+@@ -1403,6 +1416,14 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
  	bool postShadersInitialized = iniFile.HasSection("PostShaderList");
  	Section *postShaderChain = iniFile.GetOrCreateSection("PostShaderList");
  	Section *postShaderSetting = iniFile.GetOrCreateSection("PostShaderSetting");
@@ -584,6 +596,23 @@ index 53b7fb3..2d8daad 100644
  	if (pmp_Codec == NULL){
  		ERROR_LOG(Log::Mpeg, "Can not find H264 codec, please update ffmpeg");
  		return false;
+diff --git a/Core/HLE/sceReg.cpp b/Core/HLE/sceReg.cpp
+index 3c08c48..c0b398f 100644
+--- a/Core/HLE/sceReg.cpp
++++ b/Core/HLE/sceReg.cpp
+@@ -754,7 +754,12 @@ static const KeyValue tree_CONFIG_SYSTEM_CHARACTER_SET[] = {
+ static const KeyValue tree_CONFIG_SYSTEM[] = {
+ 	{ "owner_name", ValueType::STR, "P939", 5 },
+ 	{ "backlight_brightness", ValueType::INT, "", (int)0x3 },  // decimal: 3
++#if PPSSPP_PLATFORM(PS4)
++	// M33: the XMB opens with the last disc played in its drive; it shouldn't boot it on its own
++	{ "umd_autoboot", ValueType::INT, "", (int)0x0 },
++#else
+ 	{ "umd_autoboot", ValueType::INT, "", (int)0x1 },  // decimal: 1
++#endif
+ 	{ "usb_charge", ValueType::INT, "", (int)0x1 },  // decimal: 1
+ 	{ "umd_cache", ValueType::INT, "", (int)0x1 },  // decimal: 1
+ 	{ "usb_auto_connect", ValueType::INT, "", (int)0x1 },  // decimal: 1
 diff --git a/Core/HW/AvcDecoder.cpp b/Core/HW/AvcDecoder.cpp
 index 4627112..9d76bc5 100644
 --- a/Core/HW/AvcDecoder.cpp
@@ -1999,10 +2028,10 @@ index 0000000..4cd600c
 +}  // namespace PS4Keyboard
 diff --git a/ps4/PS4Main.cpp b/ps4/PS4Main.cpp
 new file mode 100644
-index 0000000..6a6102d
+index 0000000..c7ba51e
 --- /dev/null
 +++ b/ps4/PS4Main.cpp
-@@ -0,0 +1,387 @@
+@@ -0,0 +1,393 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -2198,6 +2227,12 @@ index 0000000..6a6102d
 +		if (FILE *f = fopen(fsrMarker.c_str(), "w"))
 +			fclose(f);
 +		Trace("FSR set up as the default (2x + FSR-EASU + FSR-RCAS)");
++	}
++	const std::string soundMarker = std::string(kDataRoot) + "/.ui-sound-default";
++	if (access(soundMarker.c_str(), F_OK) != 0) {
++		g_Config.bUISound = true;  // menu sounds: the default now (Core/Config.cpp), once for older setups
++		if (FILE *f = fopen(soundMarker.c_str(), "w"))
++			fclose(f);
 +	}
 +	Native_UpdateScreenScale(ps4wsi::kWidth, ps4wsi::kHeight, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor));
 +

@@ -92,7 +92,7 @@ menus. Hold **L1** while M33 starts to skip it once.
 What it shows: like a real PSP's, the XMB lists the disc in the UMD drive and the memory stick's
 games (`PSP/GAME`, as EBOOT.PBP) and saves (`PSP/SAVEDATA` = `/data/March33/PSP/SAVEDATA`), never
 loose ISO files. M33 puts the last disc game you played (ISO, CSO or CHD) in the drive when the
-XMB starts.
+XMB starts; it stays in the drive until you start it from the Game column (no autoboot).
 
 Installing a firmware (Sony's files, not included): **Download PSP firmware 6.61 from Sony** on
 the same screen fetches Sony's official updater from its update server (32.6 MB, kept in
