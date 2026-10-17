@@ -736,22 +736,45 @@ index df985bc..5bf2ed4 100644
  
  void UIBackgroundShutdown() {
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
-index e1a8d56..fb713f6 100644
+index e1a8d56..b331678 100644
 --- a/UI/EmuScreen.cpp
 +++ b/UI/EmuScreen.cpp
-@@ -60,6 +60,11 @@ using namespace std::placeholders;
+@@ -60,6 +60,12 @@ using namespace std::placeholders;
  #include "Core/MemFault.h"
  #include "Core/Reporting.h"
  #include "Core/Util/PathUtil.h"
 +#include "Core/Util/RecentFiles.h"
 +
 +#if PPSSPP_PLATFORM(PS4)
++#include "ps4/PS4GameBoot.h"
 +#include "ps4/PS4XmbGames.h"
 +#endif
  #include "Core/System.h"
  #include "GPU/Common/PresentationCommon.h"
  #include "GPU/GPUState.h"
-@@ -318,6 +323,13 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+@@ -222,6 +228,21 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+ 	if (!bootAllowStorage(filename)) {
+ 		return;
+ 	}
++#if PPSSPP_PLATFORM(PS4)
++	// M33: the PSP's game boot animation (from the installed firmware) before a game, once per boot
++	{
++		static const void *shownBy = nullptr;
++		static Path shownFor;
++		if (bootPending_ && !readyToFinishBoot_ && PollBootState() == BootState::Off &&
++				filename.GetFilename() != "vshmain.prx" && (shownBy != this || shownFor != filename)) {
++			shownBy = this;
++			shownFor = filename;
++			M33GameBoot_Start();
++		}
++		if (M33GameBoot_Playing())
++			return;
++	}
++#endif
+ 
+ 	if (Achievements::IsBlockingExecution()) {
+ 		// Keep waiting.
+@@ -318,6 +339,13 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
  	coreParam.enableSound = g_Config.bEnableSound;
  	coreParam.fileToStart = filename;
  	coreParam.mountIso.clear();
@@ -765,7 +788,7 @@ index e1a8d56..fb713f6 100644
  	coreParam.mountRoot = g_Config.mountRoot;
  	coreParam.startBreak = !g_Config.bAutoRun;
  	coreParam.headLess = false;
-@@ -1467,6 +1479,7 @@ void EmuScreen::update() {
+@@ -1467,6 +1495,7 @@ void EmuScreen::update() {
  		screenManager()->push(new GamePauseScreen(gamePath_, bootPending_));
  	}
  
@@ -773,6 +796,20 @@ index e1a8d56..fb713f6 100644
  	if (!PSP_IsInited())
  		return;
  
+@@ -1872,6 +1901,13 @@ void EmuScreen::renderUI() {
+ 	// This sets up some important states but not the viewport.
+ 	ctx->Begin();
+ 
++#if PPSSPP_PLATFORM(PS4)
++	if (M33GameBoot_Playing()) {
++		M33GameBoot_Draw(*ctx, ctx->GetBounds());
++		ctx->Flush();
++		return;
++	}
++#endif
+ 	if (root_) {
+ 		UI::LayoutViewHierarchy(*ctx, RootMargins(), root_, LayoutMode(), UseImmersiveMode());
+ 		root_->Draw(*ctx);
 diff --git a/UI/FirmwareScreen.cpp b/UI/FirmwareScreen.cpp
 index 444036b..a3d9cc8 100644
 --- a/UI/FirmwareScreen.cpp
@@ -1831,6 +1868,197 @@ index 0000000..870978a
 +float M33_IntroSeconds();
 +// The opening is over (or skipped): stops the clip and its sound.
 +void M33_EndIntro();
+diff --git a/ps4/PS4GameBoot.cpp b/ps4/PS4GameBoot.cpp
+new file mode 100644
+index 0000000..f02072a
+--- /dev/null
++++ b/ps4/PS4GameBoot.cpp
+@@ -0,0 +1,152 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++// M33: the PSP's game boot animation before a game, as a real PSP plays it, from the installed
++// firmware (flash0:/vsh/resource/gameboot.pmf; nothing of Sony's is in the package).
++//
++// gameboot.pmf is a PSMF: a 2 KB header, then an MPEG program stream with H.264 video (480x272)
++// and ATRAC3+ audio in private stream 1. The video is played by ps4/PS4StartupClip.cpp from the
++// stream with the header cut off (cached once next to the memory stick); FFmpeg doesn't take the
++// PSP's ATRAC framing, so the audio packets are collected here and decoded with PPSSPP's own
++// ATRAC3+ decoder, then resampled to the audio output's 48 kHz.
++
++#include <algorithm>
++#include <cstring>
++#include <string>
++#include <vector>
++
++#include "Common/File/FileUtil.h"
++#include "Common/File/Path.h"
++#include "Common/Log.h"
++#include "Common/TimeUtil.h"
++#include "Core/Config.h"
++#include "Core/HLE/sceAudiocodec.h"
++#include "Core/HW/SimpleAudioDec.h"
++#include "ps4/PS4GameBoot.h"
++#include "ps4/PS4StartupClip.h"
++
++namespace {
++
++bool g_playing = false;
++double g_start = 0.0;
++double g_length = 0.0;
++
++u32 Be32(const std::string &d, size_t at) {
++	return ((u32)(u8)d[at] << 24) | ((u32)(u8)d[at + 1] << 16) | ((u32)(u8)d[at + 2] << 8) | (u32)(u8)d[at + 3];
++}
++
++// The ATRAC3+ elementary stream: the payloads of the private stream 1 packets, minus their
++// 4-byte sub-stream header.
++std::string AudioStream(const std::string &pmf, size_t streamStart) {
++	std::string out;
++	size_t i = streamStart;
++	while (i + 9 < pmf.size()) {
++		const size_t j = pmf.find(std::string("\x00\x00\x01\xbd", 4), i);
++		if (j == std::string::npos || j + 9 > pmf.size())
++			break;
++		const size_t len = ((size_t)(u8)pmf[j + 4] << 8) | (u8)pmf[j + 5];
++		const size_t headerLen = (u8)pmf[j + 8];
++		const size_t payload = j + 9 + headerLen;
++		const size_t end = std::min(pmf.size(), j + 6 + len);
++		if (payload + 4 < end)
++			out.append(pmf, payload + 4, end - payload - 4);
++		i = j + 6 + len;
++	}
++	return out;
++}
++
++// 44.1 kHz stereo frames decoded from the PSP's framed ATRAC3+ (8-byte 0F D0 headers).
++std::vector<int16_t> DecodeAtrac(const std::string &es) {
++	std::vector<int16_t> pcm;
++	if (es.size() < 8 || (u8)es[0] != 0x0F || (u8)es[1] != 0xD0)
++		return pcm;
++	const size_t blockAlign = ((((u8)es[2] & 3) << 8) | (u8)es[3]) * 8 + 8;
++	AudioDecoder *dec = CreateAudioDecoder(PSP_CODEC_AT3PLUS, 44100, 2, blockAlign);
++	if (!dec)
++		return pcm;
++	int16_t buf[2048 * 2 * 2];
++	for (size_t at = 0; at + 8 + blockAlign <= es.size(); at += 8 + blockAlign) {
++		if ((u8)es[at] != 0x0F || (u8)es[at + 1] != 0xD0)
++			break;
++		int consumed = 0, samples = 0;
++		if (dec->Decode((const uint8_t *)es.data() + at + 8, (int)blockAlign, &consumed, 2, buf, &samples) && samples > 0)
++			pcm.insert(pcm.end(), buf, buf + samples * 2);
++	}
++	delete dec;
++	return pcm;
++}
++
++std::vector<int16_t> To48k(const std::vector<int16_t> &in) {
++	const size_t frames = in.size() / 2;
++	const size_t outFrames = frames * 48000 / 44100;
++	std::vector<int16_t> out(outFrames * 2);
++	for (size_t i = 0; i < outFrames; i++) {
++		const double pos = i * 44100.0 / 48000.0;
++		const size_t a = std::min(frames - 1, (size_t)pos);
++		const size_t b = std::min(frames - 1, a + 1);
++		const double f = pos - a;
++		for (int c = 0; c < 2; c++)
++			out[i * 2 + c] = (int16_t)(in[a * 2 + c] * (1.0 - f) + in[b * 2 + c] * f);
++	}
++	return out;
++}
++
++}  // namespace
++
++bool M33GameBoot_Start() {
++	M33GameBoot_Stop();
++	const Path pmfPath = g_Config.nandRootDirectory / "flash0/vsh/resource/gameboot.pmf";
++	std::string pmf;
++	if (!File::ReadBinaryFileToString(pmfPath, &pmf) || pmf.size() < 0x800 || pmf.compare(0, 4, "PSMF") != 0)
++		return false;
++	const size_t streamStart = Be32(pmf, 8);
++	if (streamStart >= pmf.size())
++		return false;
++	// The video, without the PSMF header, for FFmpeg (written once)
++	const Path cache = g_Config.memStickDirectory / "PSP/SYSTEM/CACHE";
++	const Path mps = cache / "m33_gameboot.mps";
++	if (File::GetFileSize(mps) != pmf.size() - streamStart) {
++		File::CreateFullPath(cache);
++		File::WriteDataToFile(false, pmf.data() + streamStart, pmf.size() - streamStart, mps);
++	}
++	if (!M33Clip::Open(mps.ToString()))
++		return false;
++	std::vector<int16_t> pcm = To48k(DecodeAtrac(AudioStream(pmf, streamStart)));
++	g_length = std::max<double>(M33Clip::Duration(), pcm.size() / 2 / 48000.0);
++	if (g_length < 0.5)
++		g_length = 2.6;
++	if (!pcm.empty())
++		M33Clip::SetSound(std::move(pcm));
++	g_start = time_now_d();
++	g_playing = true;
++	INFO_LOG(Log::Loader, "Game boot animation: %.2f s", g_length);
++	return true;
++}
++
++bool M33GameBoot_Playing() {
++	if (g_playing && time_now_d() - g_start > g_length + 0.15)
++		M33GameBoot_Stop();
++	return g_playing;
++}
++
++void M33GameBoot_Draw(UIContext &dc, const Bounds &bounds) {
++	if (g_playing)
++		M33Clip::Draw(dc, bounds, time_now_d() - g_start);
++}
++
++void M33GameBoot_Stop() {
++	if (g_playing)
++		M33Clip::Close();
++	g_playing = false;
++}
+diff --git a/ps4/PS4GameBoot.h b/ps4/PS4GameBoot.h
+new file mode 100644
+index 0000000..7704ac7
+--- /dev/null
++++ b/ps4/PS4GameBoot.h
+@@ -0,0 +1,27 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++// M33: the PSP's game boot animation before a game (ps4/PS4GameBoot.cpp).
++
++#pragma once
++
++class UIContext;
++struct Bounds;
++
++// Starts it, from the installed firmware; false if there is none (the game just boots).
++bool M33GameBoot_Start();
++// Whether it's still on (the game's boot waits).
++bool M33GameBoot_Playing();
++void M33GameBoot_Draw(UIContext &dc, const Bounds &bounds);
++void M33GameBoot_Stop();
 diff --git a/ps4/PS4Keyboard.cpp b/ps4/PS4Keyboard.cpp
 new file mode 100644
 index 0000000..220e547
@@ -2785,10 +3013,10 @@ index 0000000..9bce56b
 +}  // namespace PS4Pad
 diff --git a/ps4/PS4StartupClip.cpp b/ps4/PS4StartupClip.cpp
 new file mode 100644
-index 0000000..18464dc
+index 0000000..4cc1008
 --- /dev/null
 +++ b/ps4/PS4StartupClip.cpp
-@@ -0,0 +1,327 @@
+@@ -0,0 +1,331 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3001,7 +3229,7 @@ index 0000000..18464dc
 +			g_width = std::max(2, (int)(par->width * scale)) & ~1;
 +			g_height = std::max(2, (int)(par->height * scale)) & ~1;
 +			g_duration = fmt->duration > 0 ? (float)(fmt->duration / (double)AV_TIME_BASE) : 0.0f;
-+			ok = g_duration > 0.1f;
++			ok = true;  // (a PSMF's program stream may not say how long it is)
 +		}
 +	}
 +	avformat_close_input(&fmt);
@@ -3031,6 +3259,10 @@ index 0000000..18464dc
 +
 +float Duration() {
 +	return g_duration;
++}
++
++void SetSound(std::vector<int16_t> pcm) {
++	g_sound = std::move(pcm);
 +}
 +
 +void Draw(UIContext &dc, const Bounds &bounds, double t) {
@@ -3118,10 +3350,10 @@ index 0000000..18464dc
 +}  // namespace M33Clip
 diff --git a/ps4/PS4StartupClip.h b/ps4/PS4StartupClip.h
 new file mode 100644
-index 0000000..e210cdf
+index 0000000..a3f1067
 --- /dev/null
 +++ b/ps4/PS4StartupClip.h
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,41 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3141,7 +3373,9 @@ index 0000000..e210cdf
 +
 +#pragma once
 +
++#include <cstdint>
 +#include <string>
++#include <vector>
 +
 +class UIContext;
 +struct Bounds;
@@ -3151,8 +3385,10 @@ index 0000000..e210cdf
 +// Opens the clip and decodes its sound; false if there's none (or it can't be played).
 +bool Open(const std::string &path);
 +bool Active();
-+// Its length in seconds.
++// Its length in seconds (0 if the container doesn't say).
 +float Duration();
++// Sound to play with it instead of its own (48 kHz interleaved stereo), before the first Draw.
++void SetSound(std::vector<int16_t> pcm);
 +// Draws the picture for t seconds in (the sound starts with the first call).
 +void Draw(UIContext &dc, const Bounds &bounds, double t);
 +// Stops picture and sound, frees everything.
@@ -4015,10 +4251,10 @@ index 0000000..0a6709e
 +void M33Xmb_PrepareGames(const Path &gamesDir);
 diff --git a/ps4/ps4.cmake b/ps4/ps4.cmake
 new file mode 100644
-index 0000000..75c1f4f
+index 0000000..c1c5eb4
 --- /dev/null
 +++ b/ps4/ps4.cmake
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,39 @@
 +# M33: PPSSPP's PS4 frontend, included from the top CMakeLists.txt once ${TargetBin} exists.
 +# Built with M33's toolchain (toolchain/ps4-m33.cmake, and ps4-love-style.cmake as the project
 +# include: PS4_RUNTIME_SOURCES, ps4_link_mesa, ps4_add_eboot).
@@ -4029,6 +4265,8 @@ index 0000000..75c1f4f
 +	ps4/PS4Audio.h
 +	ps4/PS4Brand.cpp
 +	ps4/PS4Brand.h
++	ps4/PS4GameBoot.cpp
++	ps4/PS4GameBoot.h
 +	ps4/PS4Keyboard.cpp
 +	ps4/PS4Keyboard.h
 +	ps4/PS4Pad.cpp

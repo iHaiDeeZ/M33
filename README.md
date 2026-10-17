@@ -97,6 +97,14 @@ an EBOOT.PBP made of the disc's PARAM.SFO, ICON0 and PIC1, and M33ISO.TXT naming
 Data lists `PSP/SAVEDATA` (= `/data/March33/PSP/SAVEDATA`). The game browser hides the stand-ins,
 and they go away with their disc.
 
+Game boot: with a firmware installed, every game (from the XMB or M33's browser) starts with the
+PSP's own game boot animation and sound, as on a PSP (`flash0:/vsh/resource/gameboot.pmf`,
+played by `ps4/PS4GameBoot.cpp`; the ATRAC3+ sound goes through PPSSPP's decoder).
+
+Known gap: the XMB's Saved Data column doesn't open yet. The firmware reads the memory stick
+through its raw partition device (`msstor0p1:`) and a `fatms0:` devctl (0x02425856), neither
+emulated by PPSSPP.
+
 Installing a firmware (Sony's files, not included): **Download PSP firmware 6.61 from Sony** on
 the same screen fetches Sony's official updater from its update server (32.6 MB, kept in
 `/data/March33/firmware`) and installs it. Or open a game's info screen and choose Install
