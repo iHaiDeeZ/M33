@@ -28,7 +28,8 @@ Status: **v00.01 builds and packages; not yet tested on a console.**
   (Stock PPSSPP renders at 1x under an upscaling filter, ignoring the rendering resolution; M33
   keeps the chosen resolution and FSR upscales from it.)
 - Rewind (`ps4/PS4Rewind.cpp`), as RetroArch's: hold L2 and the game plays backwards, let go and it
-  carries on. A snapshot every 4 frames; only the newest is whole, the older ones are compressed
+  carries on, at twice the speed it was played (by the clock, not frames: a frame going back costs a
+  snapshot load). A snapshot every 6 frames; only the newest is whole, the older ones are compressed
   differences (2 KB blocks, zstd) in 256 MiB of direct memory of their own, the oldest dropped.
   Off in RetroAchievements hardcore mode.
 - Video and audio decoding: FFmpeg 7.1 (the rpcs3 port's PS4 build: H.264, ATRAC3/3+, MP3, AAC).

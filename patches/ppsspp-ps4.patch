@@ -753,7 +753,7 @@ index df985bc..5bf2ed4 100644
  
  void UIBackgroundShutdown() {
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
-index e1a8d56..88033db 100644
+index e1a8d56..1a6a715 100644
 --- a/UI/EmuScreen.cpp
 +++ b/UI/EmuScreen.cpp
 @@ -60,6 +60,14 @@ using namespace std::placeholders;
@@ -771,29 +771,27 @@ index e1a8d56..88033db 100644
  #include "Core/System.h"
  #include "GPU/Common/PresentationCommon.h"
  #include "GPU/GPUState.h"
-@@ -164,6 +172,9 @@ EmuScreen::EmuScreen(const Path &filename)
+@@ -164,6 +172,10 @@ EmuScreen::EmuScreen(const Path &filename)
  	: gamePath_(filename) {
  	saveStateSlot_ = SaveState::GetCurrentSlot();
  	g_controlMapper.AddListener(this);
 +#if PPSSPP_PLATFORM(PS4)
 +	M33Rewind_Reset();
++	M33GameBoot_Arm();
 +#endif
  
  	_dbg_assert_(coreState == CORE_POWERDOWN);
  
-@@ -222,6 +233,21 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+@@ -222,6 +234,18 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
  	if (!bootAllowStorage(filename)) {
  		return;
  	}
 +#if PPSSPP_PLATFORM(PS4)
 +	// M33: the PSP's game boot animation (from the installed firmware) before a game, once per boot
 +	{
-+		static const void *shownBy = nullptr;
-+		static Path shownFor;
 +		if (bootPending_ && !readyToFinishBoot_ && PollBootState() == BootState::Off &&
-+				filename.GetFilename() != "vshmain.prx" && (shownBy != this || shownFor != filename)) {
-+			shownBy = this;
-+			shownFor = filename;
++				filename.GetFilename() != "vshmain.prx" && M33GameBoot_TakeArm()) {
++			g_BackgroundAudio.SetGame(Path());  // (the game list's music would play over it)
 +			M33GameBoot_Start();
 +		}
 +		if (M33GameBoot_Playing())
@@ -803,7 +801,7 @@ index e1a8d56..88033db 100644
  
  	if (Achievements::IsBlockingExecution()) {
  		// Keep waiting.
-@@ -318,6 +344,13 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+@@ -318,6 +342,13 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
  	coreParam.enableSound = g_Config.bEnableSound;
  	coreParam.fileToStart = filename;
  	coreParam.mountIso.clear();
@@ -817,7 +815,7 @@ index e1a8d56..88033db 100644
  	coreParam.mountRoot = g_Config.mountRoot;
  	coreParam.startBreak = !g_Config.bAutoRun;
  	coreParam.headLess = false;
-@@ -449,6 +482,9 @@ void EmuScreen::bootComplete() {
+@@ -449,6 +480,9 @@ void EmuScreen::bootComplete() {
  
  EmuScreen::~EmuScreen() {
  	g_controlMapper.RemoveListener(this);
@@ -827,7 +825,7 @@ index e1a8d56..88033db 100644
  
  	std::string gameID = g_paramSFO.GetValueString("DISC_ID");
  	g_Config.TimeTracker().Stop(gameID);
-@@ -1467,6 +1503,7 @@ void EmuScreen::update() {
+@@ -1467,6 +1501,7 @@ void EmuScreen::update() {
  		screenManager()->push(new GamePauseScreen(gamePath_, bootPending_));
  	}
  
@@ -835,7 +833,7 @@ index e1a8d56..88033db 100644
  	if (!PSP_IsInited())
  		return;
  
-@@ -1743,6 +1780,11 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1743,6 +1778,11 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  			gpu->BeginHostFrame(displayLayoutConfig);
  		}
  
@@ -847,7 +845,7 @@ index e1a8d56..88033db 100644
  		// Freeze-frame functionality (loads a savestate on every frame). It's a savestate load
  		// like any other, so it's banned in hardcore mode - and checked here rather than only
  		// where it's toggled, since hardcore mode can come up after the fact, once the game
-@@ -1872,6 +1914,13 @@ void EmuScreen::renderUI() {
+@@ -1872,6 +1912,13 @@ void EmuScreen::renderUI() {
  	// This sets up some important states but not the viewport.
  	ctx->Begin();
  
@@ -1925,10 +1923,10 @@ index 0000000..870978a
 +void M33_EndIntro();
 diff --git a/ps4/PS4GameBoot.cpp b/ps4/PS4GameBoot.cpp
 new file mode 100644
-index 0000000..f02072a
+index 0000000..ef4f6bb
 --- /dev/null
 +++ b/ps4/PS4GameBoot.cpp
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,164 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -1970,6 +1968,7 @@ index 0000000..f02072a
 +namespace {
 +
 +bool g_playing = false;
++bool g_armed = false;
 +double g_start = 0.0;
 +double g_length = 0.0;
 +
@@ -2054,15 +2053,26 @@ index 0000000..f02072a
 +	if (!M33Clip::Open(mps.ToString()))
 +		return false;
 +	std::vector<int16_t> pcm = To48k(DecodeAtrac(AudioStream(pmf, streamStart)));
-+	g_length = std::max<double>(M33Clip::Duration(), pcm.size() / 2 / 48000.0);
++	const double pcmSeconds = pcm.size() / 2 / 48000.0;
++	g_length = std::max<double>(M33Clip::Duration(), pcmSeconds);
 +	if (g_length < 0.5)
 +		g_length = 2.6;
 +	if (!pcm.empty())
 +		M33Clip::SetSound(std::move(pcm));
 +	g_start = time_now_d();
 +	g_playing = true;
-+	INFO_LOG(Log::Loader, "Game boot animation: %.2f s", g_length);
++	NOTICE_LOG(Log::Loader, "Game boot animation: %.2f s (video %.2f s, sound %.2f s)", g_length, M33Clip::Duration(), pcmSeconds);
 +	return true;
++}
++
++void M33GameBoot_Arm() {
++	g_armed = true;
++}
++
++bool M33GameBoot_TakeArm() {
++	const bool armed = g_armed;
++	g_armed = false;
++	return armed;
 +}
 +
 +bool M33GameBoot_Playing() {
@@ -2083,10 +2093,10 @@ index 0000000..f02072a
 +}
 diff --git a/ps4/PS4GameBoot.h b/ps4/PS4GameBoot.h
 new file mode 100644
-index 0000000..7704ac7
+index 0000000..7274120
 --- /dev/null
 +++ b/ps4/PS4GameBoot.h
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,30 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -2110,6 +2120,9 @@ index 0000000..7704ac7
 +
 +// Starts it, from the installed firmware; false if there is none (the game just boots).
 +bool M33GameBoot_Start();
++// Once per boot: Arm() when a game's screen is made, TakeArm() true the first time after it.
++void M33GameBoot_Arm();
++bool M33GameBoot_TakeArm();
 +// Whether it's still on (the game's boot waits).
 +bool M33GameBoot_Playing();
 +void M33GameBoot_Draw(UIContext &dc, const Bounds &bounds);
@@ -3093,10 +3106,10 @@ index 0000000..2f80279
 +}  // namespace PS4Pad
 diff --git a/ps4/PS4Rewind.cpp b/ps4/PS4Rewind.cpp
 new file mode 100644
-index 0000000..941d893
+index 0000000..c39dac7
 --- /dev/null
 +++ b/ps4/PS4Rewind.cpp
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,343 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3134,6 +3147,7 @@ index 0000000..941d893
 +
 +#include "Common/Data/Text/I18n.h"
 +#include "Common/Log.h"
++#include "Common/TimeUtil.h"
 +#include "Common/System/OSD.h"
 +#include "Common/Thread/ThreadUtil.h"
 +#include "Core/RetroAchievements.h"
@@ -3156,7 +3170,9 @@ index 0000000..941d893
 +
 +namespace {
 +
-+constexpr int kInterval = 4;  // frames between snapshots (15 a second)
++constexpr int kInterval = 6;  // frames between snapshots (10 a second)
++constexpr double kSpeed = 2.0;  // going back, times the speed it was played (RetroArch: 1x per frame)
++constexpr int kMaxStepsPerFrame = 4;
 +constexpr size_t kBlock = 2048;
 +constexpr size_t MB = 1024 * 1024;
 +constexpr size_t LARGE_PAGE = 0x200000;
@@ -3179,7 +3195,10 @@ index 0000000..941d893
 +std::vector<u8> g_zout;
 +
 +int g_frames = 0;
-+int g_stepFrames = 0;
++double g_stepClock = 0.0;  // wall time the steps going back are owed from
++int g_steps = 0;
++double g_captureMs = 0.0, g_loadMs = 0.0;
++int g_captures = 0, g_loads = 0;
 +bool g_rewinding = false;
 +bool g_endShown = false;
 +std::atomic<bool> g_active{ false };
@@ -3201,7 +3220,7 @@ index 0000000..941d893
 +		}
 +		g_space = create_mspace_with_base(addr, len, 1);
 +		if (g_space) {
-+			INFO_LOG(Log::SaveState, "Rewind: %d MiB of direct memory for the snapshots", (int)mb);
++			NOTICE_LOG(Log::SaveState, "Rewind: %d MiB of direct memory for the snapshots", (int)mb);
 +			return true;
 +		}
 +	}
@@ -3295,8 +3314,20 @@ index 0000000..941d893
 +
 +void Capture() {
 +	Join();
++	const double start = time_now_d();
 +	if (SaveState::SaveToRam(g_next) != CChunkFileReader::ERROR_NONE)
 +		return;
++	g_captureMs += (time_now_d() - start) * 1000.0;
++	if (++g_captures == 300) {
++		size_t bytes = 0;
++		for (const Delta &d : g_deltas)
++			bytes += d.size;
++		NOTICE_LOG(Log::SaveState, "Rewind: snapshot %.1f MiB, %.1f ms each; %d kept (%.1f s), %.0f KiB each",
++			g_cur.size() / (double)MB, g_captureMs / g_captures, (int)g_deltas.size(), g_deltas.size() * kInterval / 60.0,
++			g_deltas.empty() ? 0.0 : bytes / 1024.0 / g_deltas.size());
++		g_captures = 0;
++		g_captureMs = 0.0;
++	}
 +	if (!g_haveCur) {
 +		g_cur.swap(g_next);
 +		g_haveCur = true;
@@ -3351,22 +3382,39 @@ index 0000000..941d893
 +	}
 +	auto sy = GetI18NCategory(I18NCat::SYSTEM);
 +	if (held && g_haveCur) {
++		const double now = time_now_d();
 +		if (!g_rewinding) {
-+			// First the newest snapshot (a few frames back), then one older every kInterval frames.
++			// First the newest snapshot (a few frames back), then older ones at kSpeed, by the clock
++			// (a frame going back costs a snapshot load, so counting frames would crawl).
 +			Join();
 +			g_rewinding = true;
 +			g_active = true;
-+			g_stepFrames = 0;
++			g_stepClock = now;
++			g_steps = 0;
 +			g_endShown = false;
-+		} else if (++g_stepFrames >= kInterval) {
-+			g_stepFrames = 0;
-+			if (!StepBack() && !g_endShown) {
++		} else {
++			const double stepSeconds = kInterval / 60.0 / kSpeed;
++			int owed = std::min(kMaxStepsPerFrame, (int)((now - g_stepClock) / stepSeconds));
++			if (owed > 0)
++				g_stepClock = std::max(g_stepClock + owed * stepSeconds, now - stepSeconds);
++			bool atEnd = false;
++			for (; owed > 0 && !atEnd; owed--) {
++				if (StepBack())
++					g_steps++;
++				else
++					atEnd = true;
++			}
++			if (atEnd && !g_endShown) {
 +				g_endShown = true;
 +				g_OSD.Show(OSDType::MESSAGE_INFO, sy->T("Reached the end of the rewind buffer"), 2.0f, "m33-rewind-end");
 +			}
 +		}
 +		std::string error;
-+		if (SaveState::LoadFromRam(g_cur, &error) != CChunkFileReader::ERROR_NONE) {
++		const double loadStart = time_now_d();
++		const CChunkFileReader::Error loaded = SaveState::LoadFromRam(g_cur, &error);
++		g_loadMs += (time_now_d() - loadStart) * 1000.0;
++		g_loads++;
++		if (loaded != CChunkFileReader::ERROR_NONE) {
 +			ERROR_LOG(Log::SaveState, "Rewind: loading a snapshot failed (%s)", error.c_str());
 +			M33Rewind_Reset();
 +			return;
@@ -3375,6 +3423,10 @@ index 0000000..941d893
 +		return;
 +	}
 +	if (g_rewinding) {
++		NOTICE_LOG(Log::SaveState, "Rewind: went back %d snapshots (%.1f s), %d left; a load took %.1f ms",
++			g_steps, g_steps * kInterval / 60.0, (int)g_deltas.size(), g_loads ? g_loadMs / g_loads : 0.0);
++		g_loads = 0;
++		g_loadMs = 0.0;
 +		// Carry on from the snapshot shown; the next one is taken from there.
 +		g_rewinding = false;
 +		g_active = false;
@@ -3433,10 +3485,10 @@ index 0000000..2357597
 +void M33Rewind_Reset();
 diff --git a/ps4/PS4StartupClip.cpp b/ps4/PS4StartupClip.cpp
 new file mode 100644
-index 0000000..4cc1008
+index 0000000..983e6da
 --- /dev/null
 +++ b/ps4/PS4StartupClip.cpp
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,334 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3594,13 +3646,16 @@ index 0000000..4cc1008
 +				avcodec_free_context(&ctx);
 +		}
 +	}
++	int64_t firstPts = AV_NOPTS_VALUE;  // times from the first frame (a PSMF's start at 1 s)
 +	auto emit = [&](AVFrame *f) {
 +		if (!sws)
 +			sws = sws_getContext(f->width, f->height, (AVPixelFormat)f->format, g_width, g_height, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
 +		Frame out;
 +		const AVRational tb = fmt->streams[si]->time_base;
 +		const int64_t pts = f->best_effort_timestamp != AV_NOPTS_VALUE ? f->best_effort_timestamp : 0;
-+		out.time = pts * av_q2d(tb);
++		if (firstPts == AV_NOPTS_VALUE)
++			firstPts = pts;
++		out.time = std::max<int64_t>(0, pts - firstPts) * av_q2d(tb);
 +		out.rgba.resize((size_t)g_width * g_height * 4);
 +		uint8_t *dst[1] = { out.rgba.data() };
 +		int stride[1] = { g_width * 4 };
