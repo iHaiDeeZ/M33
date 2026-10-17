@@ -1,5 +1,7 @@
 # M33 (March33)
 
+By **ShiroKlein** ([@iHaiDeeZ](https://github.com/iHaiDeeZ)) · [github.com/iHaiDeeZ/M33](https://github.com/iHaiDeeZ/M33)
+
 [PPSSPP](https://github.com/hrydgard/ppsspp) (PSP emulator) for jailbroken PS4 homebrew, built in WSL
 Ubuntu with the Resonance / DolphinPS4 / Crema PS4 toolchain (clang 21 + libc++ 21 on OpenOrbis).
 

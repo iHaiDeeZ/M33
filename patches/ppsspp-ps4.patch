@@ -752,7 +752,7 @@ index 03d80c5..99e25b5 100644
  	if (!portrait) {
  		parent->Add(new Spacer(16.0));
 diff --git a/UI/MiscScreens.cpp b/UI/MiscScreens.cpp
-index 6cd4394..66cebf2 100644
+index 6cd4394..5cb22b8 100644
 --- a/UI/MiscScreens.cpp
 +++ b/UI/MiscScreens.cpp
 @@ -60,6 +60,9 @@
@@ -789,7 +789,7 @@ index 6cd4394..66cebf2 100644
  
  	dc.Begin();
  
-@@ -555,6 +567,15 @@ void CreditsScreen::CreateDialogViews(UI::ViewGroup *parent) {
+@@ -555,6 +567,17 @@ void CreditsScreen::CreateDialogViews(UI::ViewGroup *parent) {
  	}
  
  	int rightYOffset = 0;
@@ -797,6 +797,8 @@ index 6cd4394..66cebf2 100644
 +	// M33: no browser to open links in. Who made what, instead.
 +	left->Add(new TextView(M33_VersionLine(), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetBig(true);
 +	left->Add(new TextView("PSP emulator for PS4 homebrew", new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
++	left->Add(new TextView(std::string("Made by ") + M33_AUTHOR, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetBig(true);
++	left->Add(new TextView(M33_GITHUB, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
 +	right->Add(new TextView("Based on PPSSPP by Henrik Rydg\xc3\xa5rd and contributors", new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
 +	right->Add(new TextView("www.ppsspp.org \xc2\xb7 GPL 2.0+", new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
 +	(void)rightYOffset;
@@ -805,7 +807,7 @@ index 6cd4394..66cebf2 100644
  	if (!System_GetPropertyBool(SYSPROP_APP_GOLD)) {
  		ScreenManager *sm = screenManager();
  		Choice *gold = new Choice(mm->T("Buy PPSSPP Gold"));
-@@ -742,7 +763,13 @@ void CreditsScroller::Draw(UIContext &dc) {
+@@ -742,7 +765,13 @@ void CreditsScroller::Draw(UIContext &dc) {
  
  	// TODO: This is kinda ugly, done on every frame...
  	char temp[256];
@@ -1101,10 +1103,10 @@ index 0000000..2146535
 +}  // namespace PS4Audio
 diff --git a/ps4/PS4Brand.cpp b/ps4/PS4Brand.cpp
 new file mode 100644
-index 0000000..8fd29a6
+index 0000000..8ec20d3
 --- /dev/null
 +++ b/ps4/PS4Brand.cpp
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,269 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -1365,6 +1367,8 @@ index 0000000..8fd29a6
 +	if (creditA > 0.0f) {
 +		dc.SetFontStyle(dc.GetTheme().uiFont);
 +		dc.SetFontScale(0.75f, 0.75f);
++		const std::string byLine = std::string("M33 by ") + M33_AUTHOR + " \xc2\xb7 " + M33_GITHUB;
++		dc.DrawText(byLine, cx, bounds.y2() - H * 0.115f, Rgba(196, 200, 240, creditA), ALIGN_HCENTER);
 +		dc.DrawText("Based on PPSSPP by Henrik Rydg\xc3\xa5rd \xc2\xb7 Free Software under GPL 2.0+", cx, bounds.y2() - H * 0.07f, Rgba(140, 144, 190, creditA), ALIGN_HCENTER);
 +		dc.DrawText(M33_Version(), bounds.x2() - 24.0f, bounds.y2() - H * 0.07f, Rgba(110, 112, 160, creditA), ALIGN_RIGHT);
 +		dc.SetFontScale(1.0f, 1.0f);
@@ -1374,10 +1378,10 @@ index 0000000..8fd29a6
 +}
 diff --git a/ps4/PS4Brand.h b/ps4/PS4Brand.h
 new file mode 100644
-index 0000000..4d3ddea
+index 0000000..00ffc9a
 --- /dev/null
 +++ b/ps4/PS4Brand.h
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,36 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -1406,6 +1410,10 @@ index 0000000..4d3ddea
 +const std::string &M33_Version();
 +// "M33 00.03 (PPSSPP v1.19-...)"
 +std::string M33_VersionLine();
++
++// Who made M33, and where it lives
++constexpr const char *M33_AUTHOR = "ShiroKlein";
++constexpr const char *M33_GITHUB = "github.com/iHaiDeeZ/M33";
 +
 +// The opening animation (LogoScreen), t seconds in; it ends at M33_INTRO_SECONDS.
 +constexpr float M33_INTRO_SECONDS = 4.2f;
