@@ -717,6 +717,24 @@ index 4b9f88d..f53b3aa 100644
  			pspFileSystem.Mount("umd:", blockSystem);
  		} else {
  			ERROR_LOG(Log::Loader, "mountIso failed: %s", error_string->c_str());
+diff --git a/GPU/Common/PresentationCommon.cpp b/GPU/Common/PresentationCommon.cpp
+index d541b43..c03148b 100644
+--- a/GPU/Common/PresentationCommon.cpp
++++ b/GPU/Common/PresentationCommon.cpp
+@@ -1017,7 +1017,13 @@ void PresentationCommon::CalculateRenderResolution(const DisplayLayoutConfig &co
+ 		if (firstSSAAFilterLevel >= 2)
+ 			zoom *= firstSSAAFilterLevel;
+ 	}
++#if PPSSPP_PLATFORM(PS4)
++	// M33: the rendering resolution applies with an upscaling filter too (FSR upscales from it to
++	// the 1080p output), instead of the game being drawn at the PSP's 480x272 under it.
++	if (zoom <= 1)
++#else
+ 	if (zoom <= 1 || firstIsUpscalingFilter)
++#endif
+ 		zoom = 1;
+ 
+ 	if (upscaling) {
 diff --git a/UI/Background.cpp b/UI/Background.cpp
 index df985bc..5bf2ed4 100644
 --- a/UI/Background.cpp
