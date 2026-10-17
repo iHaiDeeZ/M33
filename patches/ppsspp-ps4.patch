@@ -679,6 +679,25 @@ index 813e3d4..04411ac 100644
  	AVCodecContext  *codecCtx_ = nullptr;
  	SwrContext      *swrCtx_ = nullptr;
  
+diff --git a/Core/Loaders.cpp b/Core/Loaders.cpp
+index 6b13248..9748694 100644
+--- a/Core/Loaders.cpp
++++ b/Core/Loaders.cpp
+@@ -349,10 +349,14 @@ Path ResolvePBPFile(const Path &filename) {
+ bool UmdReplace(const Path &filepath, FileLoader **fileLoader, std::string &error) {
+ 	IFileSystem *currentUMD = pspFileSystem.GetSystem("disc0:");
+ 
++#if !PPSSPP_PLATFORM(PS4)
+ 	if (!currentUMD) {
+ 		error = "has no disc";
+ 		return false;
+ 	}
++#else
++	(void)currentUMD;  // M33: inserting into the XMB's empty drive mounts the disc fresh (MountGameISO)
++#endif
+ 
+ 	FileLoader *loadedFile = ConstructFileLoader(filepath);
+ 
 diff --git a/Core/PSPLoaders.cpp b/Core/PSPLoaders.cpp
 index 4b9f88d..f53b3aa 100644
 --- a/Core/PSPLoaders.cpp
@@ -712,31 +731,42 @@ index df985bc..5bf2ed4 100644
  
  void UIBackgroundShutdown() {
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
-index e1a8d56..b7c2cc6 100644
+index e1a8d56..4e0d809 100644
 --- a/UI/EmuScreen.cpp
 +++ b/UI/EmuScreen.cpp
-@@ -60,6 +60,7 @@ using namespace std::placeholders;
+@@ -60,6 +60,15 @@ using namespace std::placeholders;
  #include "Core/MemFault.h"
  #include "Core/Reporting.h"
  #include "Core/Util/PathUtil.h"
 +#include "Core/Util/RecentFiles.h"
++
++#if PPSSPP_PLATFORM(PS4)
++#include "Core/HLE/sceUmd.h"
++// M33: the disc that goes into the XMB's drive once it's up, and when (time_now_d)
++static Path g_m33XmbDisc;
++static double g_m33XmbDiscAt = 0.0;
++static constexpr double kM33XmbDiscDelay = 12.0;  // past the XMB's opening (about 8 s)
++#endif
  #include "Core/System.h"
  #include "GPU/Common/PresentationCommon.h"
  #include "GPU/GPUState.h"
-@@ -318,6 +319,21 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+@@ -318,6 +327,24 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
  	coreParam.enableSound = g_Config.bEnableSound;
  	coreParam.fileToStart = filename;
  	coreParam.mountIso.clear();
 +#if PPSSPP_PLATFORM(PS4)
 +	// M33: booting the XMB, the last disc game played is in its UMD drive (a real PSP's XMB lists
 +	// the disc and the memory stick's PSP/GAME, never loose ISO files).
++	// The firmware boots a disc that is in the drive at power-on, so the drive starts empty and the
++	// disc goes in once the XMB is up (EmuScreen::update), like one inserted into a running PSP.
++	g_m33XmbDisc.clear();
 +	if (filename.GetFilename() == "vshmain.prx") {
 +		for (const std::string &recent : g_recentFiles.GetRecentFiles()) {
 +			const Path disc(recent);
 +			const std::string ext = disc.GetFileExtension();
 +			if ((ext == ".iso" || ext == ".cso" || ext == ".chd") && File::Exists(disc)) {
-+				coreParam.mountIso = disc;
-+				INFO_LOG(Log::Loader, "XMB: %s is in the disc drive", disc.c_str());
++				g_m33XmbDisc = disc;
++				g_m33XmbDiscAt = time_now_d() + kM33XmbDiscDelay;
 +				break;
 +			}
 +		}
@@ -745,6 +775,21 @@ index e1a8d56..b7c2cc6 100644
  	coreParam.mountRoot = g_Config.mountRoot;
  	coreParam.startBreak = !g_Config.bAutoRun;
  	coreParam.headLess = false;
+@@ -1467,6 +1494,14 @@ void EmuScreen::update() {
+ 		screenManager()->push(new GamePauseScreen(gamePath_, bootPending_));
+ 	}
+ 
++#if PPSSPP_PLATFORM(PS4)
++	if (!g_m33XmbDisc.empty() && PSP_IsInited() && time_now_d() >= g_m33XmbDiscAt) {
++		INFO_LOG(Log::Loader, "XMB: inserting %s", g_m33XmbDisc.c_str());
++		__UmdReplace(g_m33XmbDisc);
++		g_m33XmbDisc.clear();
++	}
++#endif
++
+ 	if (!PSP_IsInited())
+ 		return;
+ 
 diff --git a/UI/FirmwareScreen.cpp b/UI/FirmwareScreen.cpp
 index 444036b..a3d9cc8 100644
 --- a/UI/FirmwareScreen.cpp
