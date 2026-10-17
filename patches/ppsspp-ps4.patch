@@ -582,6 +582,21 @@ index 3adb876..0b9e22e 100644
  	int iRemoteISOPort; // Also used for serving a local remote debugger.
  	std::string sLastRemoteISOServer;
  	int iLastRemoteISOPort;
+diff --git a/Core/FileSystems/tlzrc.cpp b/Core/FileSystems/tlzrc.cpp
+index 980495c..82de5d7 100644
+--- a/Core/FileSystems/tlzrc.cpp
++++ b/Core/FileSystems/tlzrc.cpp
+@@ -258,7 +258,9 @@ int lzrc_decompress(void *out, int out_len, void *in, int in_len)
+ 			if(rc_state>0)
+ 				rc_state -= 1;
+ 
+-			byte = rc_bittree(&rc, &rc.bm_literal[((last_byte>>rc.lc)&0x07)][0], 0x100);
++			// The literal context takes the output position in too (as Sony's RLZ encoder does, see
++			// RCOMage's rlzpack.c): it shifts out for lc <= 5 (PBPs), not for the RCOs' 6 and 7.
++			byte = rc_bittree(&rc, &rc.bm_literal[(((((rc.out_ptr&7)<<8)|last_byte)>>(rc.lc&7))&0x07)][0], 0x100);
+ 			byte -= 0x100;
+ 
+ 			rc_putbyte(&rc, byte);
 diff --git a/Core/HLE/sceKernelModule.cpp b/Core/HLE/sceKernelModule.cpp
 index dce0c21..b7d357a 100644
 --- a/Core/HLE/sceKernelModule.cpp
@@ -1988,10 +2003,10 @@ index 0000000..870978a
 +void M33_EndIntro();
 diff --git a/ps4/PS4GameBoot.cpp b/ps4/PS4GameBoot.cpp
 new file mode 100644
-index 0000000..27779a0
+index 0000000..d8e340e
 --- /dev/null
 +++ b/ps4/PS4GameBoot.cpp
-@@ -0,0 +1,405 @@
+@@ -0,0 +1,409 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -2108,7 +2123,11 @@ index 0000000..27779a0
 +// read from the installed firmware like the video: an RCO's tree and images are LZRC ("RLZ")
 +// compressed, which PPSSPP decodes already (Core/FileSystems/tlzrc.cpp, for compressed PBPs), and
 +// the image is a GIM (8-bit indexed, swizzled). Layout of both after RCOMage (rcofile.h).
-+constexpr double kLogoIn = 1.0, kLogoFade = 0.45, kLogoHold = 1.3;
++// Timed as the firmware's own anim_gameboot_movie (same RCO): the white page in under the video,
++// after 0.3 s psp_logo fades in over 0.2 s, and at 2.5 s the game goes on.
++constexpr double kLogoIn = 0.3, kLogoFade = 0.2, kGameBootEnd = 2.5;
++// psp_logo's place: (13, -9) from the screen's centre (RCO y points up), at its own size.
++constexpr float kLogoX = 13.0f, kLogoY = -9.0f;
 +
 +std::vector<u8> g_logo;  // RGBA
 +int g_logoW = 0, g_logoH = 0;
@@ -2314,10 +2333,10 @@ index 0000000..27779a0
 +		if (!g_logoTex)
 +			return;
 +	}
-+	// at the PSP's own size on its 480x272 screen, centred
++	// at the PSP's own size on its 480x272 screen, where the firmware puts it
 +	const float s = pic.w / 480.0f;
 +	const float w = g_logoW * s, h = g_logoH * s;
-+	const Bounds logo(pic.centerX() - w / 2.0f, pic.centerY() - h / 2.0f, w, h);
++	const Bounds logo(pic.centerX() + kLogoX * s - w / 2.0f, pic.centerY() - kLogoY * s - h / 2.0f, w, h);
 +	const u32 alpha = (u32)(std::clamp(a, 0.0f, 1.0f) * 255.0f);
 +	dc.Begin();
 +	draw->BindTexture(0, g_logoTex);
@@ -2351,7 +2370,7 @@ index 0000000..27779a0
 +	g_length = std::max<double>(M33Clip::Duration(), pcmSeconds);
 +	if (g_length < 0.5)
 +		g_length = 2.6;
-+	g_length = std::max(g_length, kLogoIn + kLogoFade) + kLogoHold;  // the logo, held a moment
++	g_length = std::max(g_length, kGameBootEnd);
 +	if (!pcm.empty())
 +		M33Clip::SetSound(std::move(pcm));
 +	LoadLogo();
