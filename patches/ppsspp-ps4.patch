@@ -475,6 +475,23 @@ index 93654cf..fe1e1a9 100644
  
  	// Use gameID_EmulatedTimestamp for filename
  	std::string discID = g_paramSFO.GetDiscID();
+diff --git a/Core/Config.cpp b/Core/Config.cpp
+index a15dc9e..dd2b9cc 100644
+--- a/Core/Config.cpp
++++ b/Core/Config.cpp
+@@ -1150,7 +1150,12 @@ static const ConfigSetting upgradeSettings[] = {
+ };
+ 
+ static const ConfigSetting themeSettings[] = {
++#if PPSSPP_PLATFORM(PS4)
++	// M33: its own colors (assets/themes/march33.ini, packaged by M33)
++	ConfigSetting("ThemeName", SETTING(g_Config, sThemeName), "March33", CfgFlag::DEFAULT),
++#else
+ 	ConfigSetting("ThemeName", SETTING(g_Config, sThemeName), "Default", CfgFlag::DEFAULT),
++#endif
+ };
+ 
+ static const ConfigSetting vrSettings[] = {
 diff --git a/Core/HLE/sceMpeg.cpp b/Core/HLE/sceMpeg.cpp
 index 53b7fb3..2d8daad 100644
 --- a/Core/HLE/sceMpeg.cpp
@@ -554,11 +571,151 @@ index 813e3d4..04411ac 100644
  	AVCodecContext  *codecCtx_ = nullptr;
  	SwrContext      *swrCtx_ = nullptr;
  
+diff --git a/UI/Background.cpp b/UI/Background.cpp
+index df985bc..5bf2ed4 100644
+--- a/UI/Background.cpp
++++ b/UI/Background.cpp
+@@ -369,6 +369,13 @@ void UIBackgroundInit(UIContext &dc) {
+ 		const Path &bgFile = File::Exists(bgPng) ? bgPng : bgJpg;
+ 		bgTexture = CreateTextureFromFile(dc.GetDrawContext(), bgFile.c_str(), ImageFileType::DETECT, true);
+ 	}
++#if PPSSPP_PLATFORM(PS4)
++	// M33: its own background when the user has none
++	const Path m33Background("/app0/assets/m33_background.jpg");
++	if (!bgTexture && File::Exists(m33Background)) {
++		bgTexture = CreateTextureFromFile(dc.GetDrawContext(), m33Background.c_str(), ImageFileType::DETECT, true);
++	}
++#endif
+ }
+ 
+ void UIBackgroundShutdown() {
+diff --git a/UI/MainScreen.cpp b/UI/MainScreen.cpp
+index 03d80c5..99e25b5 100644
+--- a/UI/MainScreen.cpp
++++ b/UI/MainScreen.cpp
+@@ -51,6 +51,9 @@
+ #include "UI/InstallPkgScreen.h"
+ #include "UI/Background.h"
+ #include "UI/GameBrowser.h"
++#if PPSSPP_PLATFORM(PS4)
++#include "ps4/PS4Brand.h"
++#endif
+ #include "Core/Config.h"
+ #include "Core/Loaders.h"
+ #include "Common/Data/Text/I18n.h"
+@@ -257,6 +260,10 @@ class LogoView : public UI::AnchorLayout {
+ 				versionString = versionString.substr(0, std::min(cutPos, versionString.size()));
+ 			}
+ 		}
++#if PPSSPP_PLATFORM(PS4)
++		// M33: its own version, then PPSSPP's
++		versionString = M33_Version() + " \xc2\xb7 PPSSPP " + versionString;
++#endif
+ 		dc.Flush();
+ 
+ 		const bool tiny = versionString.size() > 10;
+@@ -308,6 +315,8 @@ void MainScreen::CreateMainButtons(UI::ViewGroup *parent, bool portrait) {
+ 	parent->Add(portrait ? new Choice(ImageID("I_GEAR"), portrait ? new LinearLayoutParams() : nullptr) : new Choice(mm->T("Game Settings", "Settings")))->OnClick.Handle(this, &MainScreen::OnGameSettings);
+ 	parent->Add(portrait ? new Choice(ImageID("I_INFO"), portrait ? new LinearLayoutParams() : nullptr) : new Choice(mm->T("About PPSSPP")))->OnClick.Handle(this, &MainScreen::OnCredits);
+ 
++#if !PPSSPP_PLATFORM(PS4)
++	// (M33: no browser on the PS4, and no Gold to buy)
+ 	if (!portrait) {
+ 		parent->Add(new Choice(mm->T("www.ppsspp.org")))->OnClick.Handle(this, &MainScreen::OnPPSSPPOrg);
+ 	}
+@@ -321,6 +330,7 @@ void MainScreen::CreateMainButtons(UI::ViewGroup *parent, bool portrait) {
+ 		gold->SetImageScale(0.6f);  // for the left-icon in case of vertical.
+ 		gold->SetShine(true);
+ 	}
++#endif
+ 
+ 	if (!portrait) {
+ 		parent->Add(new Spacer(16.0));
+diff --git a/UI/MiscScreens.cpp b/UI/MiscScreens.cpp
+index 6cd4394..66cebf2 100644
+--- a/UI/MiscScreens.cpp
++++ b/UI/MiscScreens.cpp
+@@ -60,6 +60,9 @@
+ #include "UI/MiscScreens.h"
+ #include "UI/MemStickScreen.h"
+ #include "UI/MiscViews.h"
++#if PPSSPP_PLATFORM(PS4)
++#include "ps4/PS4Brand.h"
++#endif
+ 
+ void HandleCommonMessages(UIMessage message, const char *value, ScreenManager *manager, const Screen *activeScreen) {
+ 	bool isActiveScreen = manager->topScreen() == activeScreen;
+@@ -388,7 +391,11 @@ void LogoScreen::Next() {
+ 	}
+ }
+ 
++#if PPSSPP_PLATFORM(PS4)
++const float logoScreenSeconds = M33_INTRO_SECONDS;
++#else
+ const float logoScreenSeconds = 2.5f;
++#endif
+ 
+ LogoScreen::LogoScreen(AfterLogoScreen afterLogoScreen)
+ 	: afterLogoScreen_(afterLogoScreen) {
+@@ -431,6 +438,11 @@ void LogoScreen::DrawForeground(UIContext &dc) {
+ 	using namespace Draw;
+ 
+ 	const Bounds &bounds = GetLayoutBounds(dc);
++#if PPSSPP_PLATFORM(PS4)
++	// M33: its opening animation
++	M33_DrawIntro(dc, bounds, sinceStart_);
++	return;
++#endif
+ 
+ 	dc.Begin();
+ 
+@@ -555,6 +567,15 @@ void CreditsScreen::CreateDialogViews(UI::ViewGroup *parent) {
+ 	}
+ 
+ 	int rightYOffset = 0;
++#if PPSSPP_PLATFORM(PS4)
++	// M33: no browser to open links in. Who made what, instead.
++	left->Add(new TextView(M33_VersionLine(), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetBig(true);
++	left->Add(new TextView("PSP emulator for PS4 homebrew", new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
++	right->Add(new TextView("Based on PPSSPP by Henrik Rydg\xc3\xa5rd and contributors", new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
++	right->Add(new TextView("www.ppsspp.org \xc2\xb7 GPL 2.0+", new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
++	(void)rightYOffset;
++	return;
++#endif
+ 	if (!System_GetPropertyBool(SYSPROP_APP_GOLD)) {
+ 		ScreenManager *sm = screenManager();
+ 		Choice *gold = new Choice(mm->T("Buy PPSSPP Gold"));
+@@ -742,7 +763,13 @@ void CreditsScroller::Draw(UIContext &dc) {
+ 
+ 	// TODO: This is kinda ugly, done on every frame...
+ 	char temp[256];
++#if PPSSPP_PLATFORM(PS4)
++	// M33: its name and version first (the credits below are PPSSPP's)
++	snprintf(temp, sizeof(temp), "%s", M33_VersionLine().c_str());
++	if (false) {
++#else
+ 	if (System_GetPropertyBool(SYSPROP_APP_GOLD)) {
++#endif
+ 		snprintf(temp, sizeof(temp), "PPSSPP Gold %s", PPSSPP_GIT_VERSION);
+ 	} else {
+ 		snprintf(temp, sizeof(temp), "PPSSPP %s", PPSSPP_GIT_VERSION);
 diff --git a/UI/NativeApp.cpp b/UI/NativeApp.cpp
-index 806051b..4aabc7e 100644
+index 806051b..3e03734 100644
 --- a/UI/NativeApp.cpp
 +++ b/UI/NativeApp.cpp
-@@ -539,10 +539,14 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
+@@ -409,7 +409,11 @@ Path boot_filename;
+ 
+ // This is called before NativeInit so we do a little bit of initialization here.
+ void NativeGetAppInfo(std::string *app_dir_name, std::string *app_nice_name, bool *landscape, std::string *version) {
++#if PPSSPP_PLATFORM(PS4)
++	*app_nice_name = "M33";
++#else
+ 	*app_nice_name = "PPSSPP";
++#endif
+ 	*app_dir_name = "ppsspp";
+ 	*landscape = true;
+ 	*version = PPSSPP_GIT_VERSION;
+@@ -539,10 +543,14 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
  	// Packed assets are included in app
  	g_VFS.Register("", new DirectoryReader(Path(external_dir)));
  #endif
@@ -575,7 +732,7 @@ index 806051b..4aabc7e 100644
  	g_VFS.Register("", new DirectoryReader(File::GetExeDirectory() / "assets"));
  	g_VFS.Register("", new DirectoryReader(File::GetExeDirectory()));
  	g_VFS.Register("", new DirectoryReader(Path("/usr/local/share/ppsspp/assets")));
-@@ -646,6 +650,11 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
+@@ -646,6 +654,11 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
  	g_Config.memStickDirectory = DarwinFileSystemServices::appropriateMemoryStickDirectoryToUse();
  #elif PPSSPP_PLATFORM(SWITCH)
  	g_Config.memStickDirectory = g_Config.internalDataDirectory / "config/ppsspp";
@@ -587,6 +744,23 @@ index 806051b..4aabc7e 100644
  #elif PPSSPP_PLATFORM(WINDOWS)
  	// ...
  #else
+diff --git a/UI/UIAtlas.cpp b/UI/UIAtlas.cpp
+index 3430114..5b1349b 100644
+--- a/UI/UIAtlas.cpp
++++ b/UI/UIAtlas.cpp
+@@ -79,6 +79,12 @@ static const ImageMeta g_uiImageIDs[] = {
+ 	{"I_LARGE_LIST", false},
+ 	{"I_LOGO", false},
+ 	{"I_ICON", false},
++#if PPSSPP_PLATFORM(PS4)
++	// M33: the opening animation (ps4/PS4Brand.cpp)
++	{"I_M33_INTRO", false},
++	{"I_M33_MARCH", false},
++	{"I_M33_TAGLINE", false},
++#endif
+ 	{"I_ICON_GOLD", false},
+ 	{"I_FOLDER", false},
+ 	{"I_UP_DIRECTORY", false},
 diff --git a/ext/CMakeLists.txt b/ext/CMakeLists.txt
 index b8607ef..6e6973e 100644
 --- a/ext/CMakeLists.txt
@@ -783,6 +957,317 @@ index 0000000..2146535
 +void Stop();
 +
 +}  // namespace PS4Audio
+diff --git a/ps4/PS4Brand.cpp b/ps4/PS4Brand.cpp
+new file mode 100644
+index 0000000..8fd29a6
+--- /dev/null
++++ b/ps4/PS4Brand.cpp
+@@ -0,0 +1,267 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++// M33: the version strings and the opening animation.
++//
++// The opening (4.2 s, any button skips it), over a deep indigo field with a perspective grid:
++//   0.0  fade in from black, the glow behind the logo swells
++//   0.25 the ring (a PSP's outline) draws itself from the top, both ways, violet to cyan
++//   0.75 M33 settles in from a slight zoom, with a violet/cyan glow that pulses once at 2.0
++//   1.3  the accent line opens under the ring; 1.6 MARCH33 rises in; 1.9 the tagline
++//   2.2  the credit line (PPSSPP, its author, its license), as PPSSPP's own logo screen has it
++//   3.6  everything fades out to the menus
++
++#include <algorithm>
++#include <cmath>
++#include <cstdio>
++#include <string>
++
++#include "Common/Data/Color/RGBAUtil.h"
++#include "Common/Math/geom2d.h"
++#include "Common/Render/DrawBuffer.h"
++#include "Common/Render/TextureAtlas.h"
++#include "Common/UI/Context.h"
++#include "Common/UI/View.h"
++#include "Core/Config.h"
++#include "ps4/PS4Brand.h"
++
++const std::string &M33_Version() {
++	static std::string version;
++	if (version.empty()) {
++		version = "?";
++		if (FILE *f = fopen("/app0/version.txt", "r")) {
++			char buf[32]{};
++			if (fgets(buf, sizeof(buf), f)) {
++				std::string v(buf);
++				while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' '))
++					v.pop_back();
++				if (!v.empty())
++					version = v;
++			}
++			fclose(f);
++		}
++	}
++	return version;
++}
++
++std::string M33_VersionLine() {
++	return "M33 " + M33_Version() + " (PPSSPP " + std::string(PPSSPP_GIT_VERSION) + ")";
++}
++
++namespace {
++
++constexpr float kPi = 3.14159265f;
++
++// 0xAABBGGRR, as the draw buffer wants
++uint32_t Rgba(int r, int g, int b, float a) {
++	const int ia = std::clamp((int)(a * 255.0f), 0, 255);
++	return ((uint32_t)ia << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)r;
++}
++
++uint32_t Mix(int r1, int g1, int b1, int r2, int g2, int b2, float t, float a) {
++	t = std::clamp(t, 0.0f, 1.0f);
++	return Rgba((int)(r1 + (r2 - r1) * t), (int)(g1 + (g2 - g1) * t), (int)(b1 + (b2 - b1) * t), a);
++}
++
++// violet (#A05CFF) to cyan (#40DCFF)
++uint32_t Brand(float t, float a) {
++	return Mix(160, 92, 255, 64, 220, 255, t, a);
++}
++
++float Smooth(float a, float b, float t) {
++	const float x = std::clamp((t - a) / (b - a), 0.0f, 1.0f);
++	return x * x * (3.0f - 2.0f * x);
++}
++
++float EaseOutCubic(float x) {
++	x = std::clamp(x, 0.0f, 1.0f);
++	return 1.0f - (1.0f - x) * (1.0f - x) * (1.0f - x);
++}
++
++// 0 -> 1 -> 0 over [a, b]
++float Bump(float a, float b, float t) {
++	if (t <= a || t >= b)
++		return 0.0f;
++	return sinf((t - a) / (b - a) * kPi);
++}
++
++// A point on a stadium (centered on 0, straight half-length `half`, radius `r`), `s` along its
++// outline clockwise from the top center.
++void Stadium(float half, float r, float s, float *x, float *y) {
++	const float arc = kPi * r;
++	if (s < half) {
++		*x = s; *y = -r;
++		return;
++	}
++	s -= half;
++	if (s < arc) {
++		const float a = -kPi / 2 + s / r;
++		*x = half + cosf(a) * r; *y = sinf(a) * r;
++		return;
++	}
++	s -= arc;
++	if (s < 2 * half) {
++		*x = half - s; *y = r;
++		return;
++	}
++	s -= 2 * half;
++	if (s < arc) {
++		const float a = kPi / 2 + s / r;
++		*x = -half + cosf(a) * r; *y = sinf(a) * r;
++		return;
++	}
++	s -= arc;
++	*x = -half + s; *y = -r;
++}
++
++// An atlas image at (cx, cy) center, `width` wide, with a vertical gradient.
++void DrawImageCentered(UIContext &dc, ImageID id, float cx, float cy, float width, uint32_t top, uint32_t bottom) {
++	const AtlasImage *img = dc.Draw()->GetAtlas()->getImage(id);
++	if (!img || img->w <= 0)
++		return;
++	const float height = width * (float)img->h / (float)img->w;
++	dc.Draw()->DrawImageStretchVGradient(id, cx - width / 2, cy - height / 2, cx + width / 2, cy + height / 2, top, bottom);
++}
++
++// The same, as a soft glow: copies around the point, in a color, faint.
++void DrawGlow(UIContext &dc, ImageID id, float cx, float cy, float width, float radius, uint32_t color) {
++	const int kSteps = 12;
++	for (int i = 0; i < kSteps; i++) {
++		const float a = i * 2 * kPi / kSteps;
++		for (float k : { 1.0f, 0.5f })
++			DrawImageCentered(dc, id, cx + cosf(a) * radius * k, cy + sinf(a) * radius * k, width, color, color);
++	}
++}
++
++}  // namespace
++
++void M33_DrawIntro(UIContext &dc, const Bounds &bounds, double time) {
++	const float t = (float)time;
++	const float W = bounds.w, H = bounds.h;
++	const float cx = bounds.centerX();
++	const float cy = bounds.y + H * 0.42f;
++	const float fade = 1.0f - Smooth(M33_INTRO_SECONDS - 0.6f, M33_INTRO_SECONDS, t);
++	const float bgIn = Smooth(0.0f, 0.5f, t);
++	DrawBuffer *draw = dc.Draw();
++	const ImageID white("I_SOLIDWHITE");
++
++	dc.Begin();
++
++	// The field: black, then deep indigo, darker at the bottom.
++	draw->Rect(bounds.x, bounds.y, W, H, 0xFF000000);
++	draw->RectVGradient(bounds.x, bounds.y, bounds.x2(), bounds.y2(), Rgba(20, 12, 51, bgIn * fade), Rgba(5, 4, 16, bgIn * fade));
++
++	// The glow behind the logo: stacked faint discs.
++	const float glow = bgIn * fade * (0.85f + 0.15f * Bump(1.9f, 2.7f, t));
++	for (int i = 0; i < 10; i++) {
++		const float r = H * (0.12f + 0.05f * i);
++		draw->FillCircle(cx, cy, r, 64, Rgba(70, 38, 160, 0.045f * glow));
++	}
++
++	// The grid: lines fan out from the horizon, rows drift towards the viewer.
++	const float horizon = bounds.y + H * 0.80f;
++	const float gridA = 0.16f * bgIn * fade;
++	for (int i = -16; i <= 16; i++) {
++		draw->Line(white, cx + i * W * 0.0135f, horizon, cx + i * W * 0.16f, bounds.y2(), 1.0f, Rgba(120, 90, 255, gridA));
++	}
++	const float drift = fmodf(t * 0.35f, 1.0f);
++	for (int k = 0; k < 9; k++) {
++		const float f = (k + drift) / 9.0f;
++		const float y = horizon + (bounds.y2() - horizon) * f * f;
++		draw->Line(white, bounds.x, y, bounds.x2(), y, 1.0f, Rgba(120, 90, 255, gridA * std::min(1.0f, f * 3.0f)));
++	}
++
++	// The ring, drawn from the top center both ways.
++	const float ringW = std::min(W * 0.60f, H * 1.25f);
++	const float ringH = ringW * 0.42f;
++	const float r = ringH / 2, half = (ringW - ringH) / 2;
++	const float perimeter = 4 * half + 2 * kPi * r;
++	const float ringP = EaseOutCubic(Smooth(0.25f, 1.35f, t) * 1.0f);
++	if (ringP > 0.0f) {
++		const int kSegments = 180;
++		const float reach = ringP * perimeter / 2;
++		for (int side = -1; side <= 1; side += 2) {
++			float px, py;
++			Stadium(half, r, 0.0f, &px, &py);
++			for (int i = 1; i <= kSegments; i++) {
++				const float s = reach * i / kSegments;
++				float x, y;
++				Stadium(half, r, s, &x, &y);
++				const float ax = cx + side * px, ay = cy + py, bx = cx + side * x, by = cy + y;
++				const float hue = (bx - (cx - ringW / 2)) / ringW;
++				draw->Line(white, ax, ay, bx, by, 9.0f, Brand(hue, 0.10f * fade));
++				draw->Line(white, ax, ay, bx, by, 3.0f, Brand(hue, 0.95f * fade));
++				px = x; py = y;
++			}
++		}
++		// the bright tips while it draws
++		if (ringP < 0.999f) {
++			float x, y;
++			Stadium(half, r, reach, &x, &y);
++			for (int side = -1; side <= 1; side += 2) {
++				draw->FillCircle(cx + side * x, cy + y, 9.0f, 24, Rgba(200, 230, 255, 0.25f * fade));
++				draw->FillCircle(cx + side * x, cy + y, 4.0f, 16, Rgba(255, 255, 255, 0.9f * fade));
++			}
++		}
++	}
++
++	// M33: zooms in slightly as it fades in, glows violet and cyan.
++	const float logoA = Smooth(0.75f, 1.55f, t) * fade;
++	if (logoA > 0.0f) {
++		const float zoom = 1.12f - 0.12f * EaseOutCubic(Smooth(0.75f, 1.55f, t));
++		const float logoW = ringW * 0.70f * zoom;
++		const ImageID logo("I_M33_INTRO");
++		const float pulse = 1.0f + 0.8f * Bump(1.9f, 2.7f, t);
++		DrawGlow(dc, logo, cx, cy, logoW, 10.0f * pulse, Rgba(160, 92, 255, 0.05f * logoA * pulse));
++		DrawGlow(dc, logo, cx, cy + 3.0f, logoW, 4.0f * pulse, Rgba(64, 220, 255, 0.07f * logoA * pulse));
++		DrawImageCentered(dc, logo, cx, cy, logoW, Rgba(255, 255, 255, logoA), Rgba(214, 226, 255, logoA));
++	}
++
++	// The accent line under the ring, opening from the middle.
++	const float lineY = cy + r + H * 0.05f;
++	const float lineP = EaseOutCubic(Smooth(1.3f, 1.9f, t));
++	if (lineP > 0.0f) {
++		const float halfW = ringW * 0.33f * lineP;
++		const int kPieces = 48;
++		for (int i = 0; i < kPieces; i++) {
++			const float u = (float)i / kPieces;
++			const float x1 = cx - halfW + 2 * halfW * u, x2 = cx - halfW + 2 * halfW * (u + 1.0f / kPieces);
++			const float edge = 1.0f - fabsf(u * 2 - 1);
++			draw->Rect(x1, lineY, x2 - x1 + 0.5f, 3.0f, Brand(u, (0.25f + 0.75f * edge) * fade));
++		}
++	}
++
++	// MARCH33, rising in; then the tagline.
++	const float marchA = Smooth(1.6f, 2.2f, t) * fade;
++	if (marchA > 0.0f) {
++		const float rise = (1.0f - EaseOutCubic(Smooth(1.6f, 2.2f, t))) * 14.0f;
++		DrawImageCentered(dc, ImageID("I_M33_MARCH"), cx, lineY + H * 0.055f + rise, ringW * 0.44f, Rgba(236, 238, 255, marchA), Rgba(200, 206, 255, marchA));
++	}
++	const float tagA = Smooth(1.9f, 2.5f, t) * fade;
++	if (tagA > 0.0f) {
++		DrawImageCentered(dc, ImageID("I_M33_TAGLINE"), cx, lineY + H * 0.115f, ringW * 0.54f, Rgba(154, 164, 216, tagA), Rgba(154, 164, 216, tagA));
++	}
++
++	// The credit line and the version.
++	const float creditA = Smooth(2.2f, 2.7f, t) * fade;
++	if (creditA > 0.0f) {
++		dc.SetFontStyle(dc.GetTheme().uiFont);
++		dc.SetFontScale(0.75f, 0.75f);
++		dc.DrawText("Based on PPSSPP by Henrik Rydg\xc3\xa5rd \xc2\xb7 Free Software under GPL 2.0+", cx, bounds.y2() - H * 0.07f, Rgba(140, 144, 190, creditA), ALIGN_HCENTER);
++		dc.DrawText(M33_Version(), bounds.x2() - 24.0f, bounds.y2() - H * 0.07f, Rgba(110, 112, 160, creditA), ALIGN_RIGHT);
++		dc.SetFontScale(1.0f, 1.0f);
++	}
++
++	dc.Flush();
++}
+diff --git a/ps4/PS4Brand.h b/ps4/PS4Brand.h
+new file mode 100644
+index 0000000..4d3ddea
+--- /dev/null
++++ b/ps4/PS4Brand.h
+@@ -0,0 +1,32 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++// M33 (March33): the app's brand in PPSSPP's UI. The images (I_ICON, I_LOGO, I_M33_*) are vectors
++// added to ui_images/images.svg when the app is packaged (M33's scripts/brand-stage.py).
++
++#pragma once
++
++#include <string>
++
++class UIContext;
++struct Bounds;
++
++// The package's version ("00.03", from /app0/version.txt).
++const std::string &M33_Version();
++// "M33 00.03 (PPSSPP v1.19-...)"
++std::string M33_VersionLine();
++
++// The opening animation (LogoScreen), t seconds in; it ends at M33_INTRO_SECONDS.
++constexpr float M33_INTRO_SECONDS = 4.2f;
++void M33_DrawIntro(UIContext &dc, const Bounds &bounds, double t);
 diff --git a/ps4/PS4Main.cpp b/ps4/PS4Main.cpp
 new file mode 100644
 index 0000000..fb636ac
@@ -2088,10 +2573,10 @@ index 0000000..1a3454c
 +PFN_vkGetInstanceProcAddr ps4_vk_get_instance_proc_addr();
 diff --git a/ps4/ps4.cmake b/ps4/ps4.cmake
 new file mode 100644
-index 0000000..0766d3c
+index 0000000..d8dbb33
 --- /dev/null
 +++ b/ps4/ps4.cmake
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,28 @@
 +# M33: PPSSPP's PS4 frontend, included from the top CMakeLists.txt once ${TargetBin} exists.
 +# Built with M33's toolchain (toolchain/ps4-m33.cmake, and ps4-love-style.cmake as the project
 +# include: PS4_RUNTIME_SOURCES, ps4_link_mesa, ps4_add_eboot).
@@ -2100,6 +2585,8 @@ index 0000000..0766d3c
 +	ps4/PS4Main.cpp
 +	ps4/PS4Audio.cpp
 +	ps4/PS4Audio.h
++	ps4/PS4Brand.cpp
++	ps4/PS4Brand.h
 +	ps4/PS4Pad.cpp
 +	ps4/PS4Pad.h
 +	ps4/PS4Stubs.c

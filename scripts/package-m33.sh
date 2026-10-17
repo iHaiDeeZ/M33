@@ -24,6 +24,10 @@ echo "$VERSION" > "$STAGE/version.txt"
 # the web debugger and upload pages
 mkdir -p "$STAGE/assets"
 tar -C "$SRC/assets" --exclude=debugger --exclude=upload --exclude=.git -cf - . | tar -C "$STAGE/assets" -xf -
+# M33's branding over them: its files (assets/: the March33 theme, the menus' background), then its
+# images in the UI atlas and its name in the texts (scripts/brand-stage.py; brand/ from make-brand.py)
+cp -r "$HERE/../assets/." "$STAGE/assets/"
+python3 "$HERE/brand-stage.py" "$STAGE/assets" "$HERE/.."
 # PkgTool's pkg_build crashes ("Sequence contains no elements") on empty folders.
 find "$STAGE" -type d -empty -delete
 # Vulkan (RADV on GNM) runs under the plain homebrew identity (4.5 GiB of direct memory).

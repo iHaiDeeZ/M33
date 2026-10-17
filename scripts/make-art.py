@@ -91,6 +91,25 @@ def psp_outline(draw, cx, cy, w, color, width, details=True):
         draw.ellipse([bx + ox * s - s, cy + oy * s - s, bx + ox * s + s, cy + oy * s + s], outline=color, width=max(1, width // 2))
 
 
+def gradient_ring(img, cx, cy, w, width, alpha=255, glow=0):
+    """The brand ring: a stadium stroked violet (left) to cyan (right), as in the app's opening."""
+    W, H = img.size
+    h = w * 0.42
+    mask = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], radius=h / 2, outline=alpha, width=width)
+    grad = Image.new("RGBA", (W, H))
+    gp = ImageDraw.Draw(grad)
+    x0, x1 = int(cx - w / 2), int(cx + w / 2)
+    for x in range(W):
+        t = min(1.0, max(0.0, (x - x0) / max(1, x1 - x0)))
+        gp.line([(x, 0), (x, H)], fill=lerp(VIOLET, CYAN, t) + (255,))
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    layer.paste(grad, (0, 0), mask)
+    if glow:
+        img.alpha_composite(layer.filter(ImageFilter.GaussianBlur(glow)))
+    img.alpha_composite(layer)
+
+
 def logo(canvas, cx, cy, size):
     """The M33 mark centered on (cx, cy): glow, then the gradient letters."""
     font = ImageFont.truetype(FONT, size)
@@ -121,7 +140,7 @@ def icon():
     W = H = 512
     img = background(W, H, W / 2, H * 0.42).convert("RGBA")
     d = ImageDraw.Draw(img)
-    psp_outline(d, W / 2, H * 0.40, W * 0.90, (88, 70, 150, 255), 3, details=False)
+    gradient_ring(img, W / 2, H * 0.40, W * 0.90, 4, glow=6)
     logo(img, W / 2, H * 0.39, 116)
     d = ImageDraw.Draw(img)
     accent_line(d, W / 2, int(H * 0.66), W * 0.30, 3)
@@ -146,7 +165,7 @@ def picture():
     for k in range(1, 9):
         y = horizon + (H - horizon) * (k / 8) ** 1.8
         d.line([(0, y), (W, y)], fill=(40, 28, 88, 255), width=1)
-    psp_outline(d, W * 0.33, H * 0.40, 900, (70, 56, 128, 255), 4, details=False)
+    gradient_ring(img, W * 0.33, H * 0.40, 900, 5, glow=10)
     logo(img, W * 0.33, H * 0.39, 200)
     d = ImageDraw.Draw(img)
     accent_line(d, W * 0.33, int(H * 0.60), 300, 4)
