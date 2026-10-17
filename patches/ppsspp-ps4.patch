@@ -598,10 +598,20 @@ index 980495c..82de5d7 100644
  
  			rc_putbyte(&rc, byte);
 diff --git a/Core/HLE/sceKernelModule.cpp b/Core/HLE/sceKernelModule.cpp
-index dce0c21..b7d357a 100644
+index dce0c21..0b53d98 100644
 --- a/Core/HLE/sceKernelModule.cpp
 +++ b/Core/HLE/sceKernelModule.cpp
-@@ -2535,6 +2535,19 @@ int __KernelGPUReplay() {
+@@ -79,6 +79,9 @@
+ #include "GPU/GPU.h"
+ #include "GPU/GPUCommon.h"
+ #include "GPU/GPUState.h"
++#if PPSSPP_PLATFORM(PS4)
++#include "ps4/PS4XmbGames.h"
++#endif
+ 
+ enum : u32 {
+ 	// Function exports.
+@@ -2535,6 +2538,29 @@ int __KernelGPUReplay() {
  
  int sceKernelLoadExec(const char *filename, u32 paramPtr) {
  	std::string exec_filename = filename;
@@ -613,6 +623,16 @@ index dce0c21..b7d357a 100644
 +		if (slash != std::string::npos && pspFileSystem.ReadEntireFile(exec_filename.substr(0, slash) + "/M33ISO.TXT", marker) >= 0 && !marker.empty()) {
 +			const std::string disc(marker.begin(), marker.end());
 +			INFO_LOG(Log::Loader, "XMB: launching %s", disc.c_str());
++			M33Fw_SetDirect(disc);
++			System_PostUIMessage(UIMessage::REQUEST_GAME_BOOT, disc);
++			return hleLogInfo(Log::Loader, 0, "M33: booting the disc");
++		}
++		// The firmware, booted for a disc from M33's list, launching it after its game boot
++		if (!M33Fw_Disc().empty() && exec_filename.compare(0, 6, "disc0:") == 0) {
++			const std::string disc = M33Fw_Disc();
++			INFO_LOG(Log::Loader, "Firmware: launching %s", disc.c_str());
++			M33Fw_SetDisc("");
++			M33Fw_SetDirect(disc);
 +			System_PostUIMessage(UIMessage::REQUEST_GAME_BOOT, disc);
 +			return hleLogInfo(Log::Loader, 0, "M33: booting the disc");
 +		}
@@ -635,10 +655,20 @@ index 53b7fb3..2d8daad 100644
  		ERROR_LOG(Log::Mpeg, "Can not find H264 codec, please update ffmpeg");
  		return false;
 diff --git a/Core/HLE/sceReg.cpp b/Core/HLE/sceReg.cpp
-index 3c08c48..c0b398f 100644
+index 3c08c48..99128ac 100644
 --- a/Core/HLE/sceReg.cpp
 +++ b/Core/HLE/sceReg.cpp
-@@ -754,7 +754,12 @@ static const KeyValue tree_CONFIG_SYSTEM_CHARACTER_SET[] = {
+@@ -8,6 +8,9 @@
+ #include "Common/Serialize/Serializer.h"
+ #include "Common/Serialize/SerializeMap.h"
+ #include "Common/StringUtils.h"
++#if PPSSPP_PLATFORM(PS4)
++#include "ps4/PS4XmbGames.h"
++#endif
+ 
+ #define SYSTEM_REGISTRY "/system"
+ #define REG_KEYNAME_SIZE 27
+@@ -754,7 +757,12 @@ static const KeyValue tree_CONFIG_SYSTEM_CHARACTER_SET[] = {
  static const KeyValue tree_CONFIG_SYSTEM[] = {
  	{ "owner_name", ValueType::STR, "P939", 5 },
  	{ "backlight_brightness", ValueType::INT, "", (int)0x3 },  // decimal: 3
@@ -651,6 +681,22 @@ index 3c08c48..c0b398f 100644
  	{ "usb_charge", ValueType::INT, "", (int)0x1 },  // decimal: 1
  	{ "umd_cache", ValueType::INT, "", (int)0x1 },  // decimal: 1
  	{ "usb_auto_connect", ValueType::INT, "", (int)0x1 },  // decimal: 1
+@@ -994,6 +1002,15 @@ void __RegInit() {
+ 	g_handleGen = 1337;
+ 	g_openCategories.clear();
+ 	g_overlay.clear();
++#if PPSSPP_PLATFORM(PS4)
++	// M33: the firmware booted for a disc from M33's list boots it on its own, as a PSP does
++	if (!M33Fw_Disc().empty()) {
++		OverlayValue on;
++		on.type = ValueType::INT;
++		on.intValue = 1;
++		g_overlay["CONFIG/SYSTEM"]["umd_autoboot"] = on;
++	}
++#endif
+ 	InvalidateMergedCache();
+ }
+ 
 diff --git a/Core/HW/AvcDecoder.cpp b/Core/HW/AvcDecoder.cpp
 index 4627112..9d76bc5 100644
 --- a/Core/HW/AvcDecoder.cpp
@@ -807,7 +853,7 @@ index df985bc..5bf2ed4 100644
  
  void UIBackgroundShutdown() {
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
-index e1a8d56..3b41851 100644
+index e1a8d56..948fbc1 100644
 --- a/UI/EmuScreen.cpp
 +++ b/UI/EmuScreen.cpp
 @@ -60,6 +60,13 @@ using namespace std::placeholders;
@@ -842,7 +888,7 @@ index e1a8d56..3b41851 100644
  	if (Achievements::IsBlockingExecution()) {
  		// Keep waiting.
  		return;
-@@ -318,6 +327,13 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+@@ -318,6 +327,29 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
  	coreParam.enableSound = g_Config.bEnableSound;
  	coreParam.fileToStart = filename;
  	coreParam.mountIso.clear();
@@ -852,11 +898,27 @@ index e1a8d56..3b41851 100644
 +	// firmware boots a disc that is in it at power-on.
 +	if (filename.GetFilename() == "vshmain.prx")
 +		M33Xmb_PrepareGames(Path("/data/March33/games"));
++	// A disc started from M33's list: the firmware boots with it in the drive and autobooting it, so
++	// its own startup and game boot play first, as on a PSP. When the firmware launches it
++	// (sceKernelLoadExec), it's booted again as itself, straight in.
++	{
++		const Path vsh = g_Config.nandRootDirectory / "flash0/vsh/module/vshmain.prx";
++		const std::string ext = filename.GetFileExtension();
++		const bool disc = ext == ".iso" || ext == ".cso" || ext == ".chd";
++		if (disc && !M33Fw_TakeDirect(filename.ToString()) && File::Exists(vsh)) {
++			INFO_LOG(Log::Boot, "M33: %s through the firmware", filename.c_str());
++			M33Fw_SetDisc(filename.ToString());
++			coreParam.fileToStart = vsh;
++			coreParam.mountIso = filename;
++		} else {
++			M33Fw_SetDisc("");
++		}
++	}
 +#endif
  	coreParam.mountRoot = g_Config.mountRoot;
  	coreParam.startBreak = !g_Config.bAutoRun;
  	coreParam.headLess = false;
-@@ -449,6 +465,9 @@ void EmuScreen::bootComplete() {
+@@ -449,6 +481,9 @@ void EmuScreen::bootComplete() {
  
  EmuScreen::~EmuScreen() {
  	g_controlMapper.RemoveListener(this);
@@ -866,7 +928,7 @@ index e1a8d56..3b41851 100644
  
  	std::string gameID = g_paramSFO.GetValueString("DISC_ID");
  	g_Config.TimeTracker().Stop(gameID);
-@@ -1467,6 +1486,7 @@ void EmuScreen::update() {
+@@ -1467,6 +1502,7 @@ void EmuScreen::update() {
  		screenManager()->push(new GamePauseScreen(gamePath_, bootPending_));
  	}
  
@@ -874,7 +936,7 @@ index e1a8d56..3b41851 100644
  	if (!PSP_IsInited())
  		return;
  
-@@ -1735,6 +1755,14 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1735,6 +1771,14 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  	PSP_UpdateDebugStats((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::DEBUG_STATS || g_Config.bLogFrameDrops);
  	clearColor_ = 0;
  	bool blockedExecution = Achievements::IsBlockingExecution();
@@ -889,7 +951,7 @@ index e1a8d56..3b41851 100644
  	if (!blockedExecution) {
  		// We process savestates before running the frame.
  		SaveState::Process();
-@@ -1805,6 +1833,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1805,6 +1849,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  			// Run post processing and other passes.
  			gpu->PrepareCopyDisplayToOutput(displayLayoutConfig);
  			gpu->EndHostFrame();
@@ -900,7 +962,7 @@ index e1a8d56..3b41851 100644
  
  			// The right time to run this
  			if (ScreenshotNotifyPostGameRender(draw) && skipBufferEffects) {
-@@ -1841,6 +1873,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1841,6 +1889,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  }
  
  bool EmuScreen::hasVisibleUI() {
@@ -911,7 +973,7 @@ index e1a8d56..3b41851 100644
  	// Regular but uncommon UI.
  	if (saveStatePreview_->GetVisibility() != UI::V_GONE || loadingSpinner_->GetVisibility() == UI::V_VISIBLE)
  		return true;
-@@ -1872,6 +1908,9 @@ void EmuScreen::renderUI() {
+@@ -1872,6 +1924,9 @@ void EmuScreen::renderUI() {
  	// This sets up some important states but not the viewport.
  	ctx->Begin();
  
@@ -4640,10 +4702,10 @@ index 0000000..1a3454c
 +PFN_vkGetInstanceProcAddr ps4_vk_get_instance_proc_addr();
 diff --git a/ps4/PS4XmbGames.cpp b/ps4/PS4XmbGames.cpp
 new file mode 100644
-index 0000000..5466dc2
+index 0000000..0d469bd
 --- /dev/null
 +++ b/ps4/PS4XmbGames.cpp
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,188 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4809,12 +4871,35 @@ index 0000000..5466dc2
 +	}
 +	INFO_LOG(Log::Loader, "XMB: %d discs listed (%d new)", (int)covered.size() + made, made);
 +}
++
++namespace {
++std::string g_fwDisc;
++std::string g_direct;
++}  // namespace
++
++const std::string &M33Fw_Disc() {
++	return g_fwDisc;
++}
++
++void M33Fw_SetDisc(const std::string &disc) {
++	g_fwDisc = disc;
++}
++
++void M33Fw_SetDirect(const std::string &disc) {
++	g_direct = disc;
++}
++
++bool M33Fw_TakeDirect(const std::string &disc) {
++	const bool direct = !g_direct.empty() && g_direct == disc;
++	g_direct.clear();
++	return direct;
++}
 diff --git a/ps4/PS4XmbGames.h b/ps4/PS4XmbGames.h
 new file mode 100644
-index 0000000..0a6709e
+index 0000000..1ba337d
 --- /dev/null
 +++ b/ps4/PS4XmbGames.h
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,34 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4833,10 +4918,22 @@ index 0000000..0a6709e
 +
 +#pragma once
 +
++#include <string>
++
 +class Path;
 +
 +// Makes (or removes) the memory stick stand-ins for the discs in gamesDir. Before the XMB boots.
 +void M33Xmb_PrepareGames(const Path &gamesDir);
++
++// A disc started from M33's own list goes through the firmware, as a PSP powered on with the disc
++// in: its startup, then its own game boot, then the firmware launches the disc, and M33 boots it as
++// itself (EmuScreen, sceKernelLoadExec, sceReg's umd_autoboot).
++// The disc of the firmware boot under way (empty when there's none).
++const std::string &M33Fw_Disc();
++void M33Fw_SetDisc(const std::string &disc);
++// The disc the firmware (or the XMB) launched: its next boot goes straight in. True once for it.
++void M33Fw_SetDirect(const std::string &disc);
++bool M33Fw_TakeDirect(const std::string &disc);
 diff --git a/ps4/ps4.cmake b/ps4/ps4.cmake
 new file mode 100644
 index 0000000..c426de6

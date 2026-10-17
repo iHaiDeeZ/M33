@@ -109,7 +109,11 @@ and they go away with their disc.
 
 Game boot: started from the XMB, a game gets the firmware's own game boot (the emulated PSP plays
 it, as on a PSP) and then boots as the disc. M33 adds none of its own: its imitation (v00.16-v00.23)
-played on top of the real one and is gone; started from M33's own list, a game boots straight in.
+played on top of the real one and is gone. A disc started from M33's own list goes through the
+firmware too, as a PSP powered on with it in the drive: the firmware boots with the disc in and
+`umd_autoboot` on (for that boot only), plays its startup and game boot, and launches the disc
+(`sceKernelLoadExecVSHDisc`), which M33 then boots as itself, straight in. Without a firmware
+installed, games boot straight in.
 
 Known gap: the XMB's Saved Data column doesn't open yet. The firmware reads the memory stick
 through its raw partition device (`msstor0p1:`) and a `fatms0:` devctl (0x02425856), neither
