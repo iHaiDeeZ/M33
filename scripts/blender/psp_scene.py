@@ -467,4 +467,5 @@ SHOT_DEFS = {
 
 os.makedirs(OUT, exist_ok=True)
 for s in SHOTS:
-    shot(s, **SHOT_DEFS[s])
+    if s in SHOT_DEFS:  # (startup_anim.py builds the scene with "none")
+        shot(s, **SHOT_DEFS[s])

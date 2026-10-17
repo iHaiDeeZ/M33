@@ -17,7 +17,7 @@ Status: **v00.01 builds and packages; not yet tested on a console.**
   The fault handler reads registers through the PS4's signal context layout (`toolchain/m33-overlay.sh`).
 - Input: DualShock 4 (ScePad), one per signed-in user, with PPSSPP's default pad mapping:
   Cross/Circle/Square/Triangle, D-pad, left stick, L1/R1 = L/R, OPTIONS = START,
-  touchpad click = SELECT, **L2 = PPSSPP's menu**, R2 = fast-forward. Everything is remappable in
+  touchpad click = SELECT, **L3 + R3 (or L2) = the in-game menu**, R2 = fast-forward. Everything is remappable in
   Settings > Controls.
 - Audio: sceAudioOut, 48 kHz (PPSSPP's mixer resamples).
 - Video and audio decoding: FFmpeg 7.1 (the rpcs3 port's PS4 build: H.264, ATRAC3/3+, MP3, AAC).
