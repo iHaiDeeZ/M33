@@ -19,13 +19,18 @@ Status: **v00.01 builds and packages; not yet tested on a console.**
   The fault handler reads registers through the PS4's signal context layout (`toolchain/m33-overlay.sh`).
 - Input: DualShock 4 (ScePad), one per signed-in user, with PPSSPP's default pad mapping:
   Cross/Circle/Square/Triangle, D-pad, left stick, L1/R1 = L/R, OPTIONS = START,
-  touchpad click = SELECT, **L3 + R3 (or L2) = the in-game menu**, R2 = fast-forward. Everything is remappable in
+  touchpad click = SELECT, **L3 + R3 = the in-game menu**, **L2 (hold) = rewind**, R2 = fast-forward. Everything is remappable in
   Settings > Controls.
 - Audio: sceAudioOut, 48 kHz (PPSSPP's mixer resamples).
-- Picture: renders at 2x (960x544) and upscales to 1080p with AMD FidelityFX Super Resolution
-  (PPSSPP's FSR-EASU, then FSR-RCAS sharpening) by default; Settings > Graphics changes both.
+- Picture: renders at 4x (1920x1088, the TV's 1080p) with AMD FidelityFX's RCAS sharpening by
+  default; for lower resolutions, add FSR-EASU (the upscaler) in Settings > Graphics >
+  Postprocessing shaders.
   (Stock PPSSPP renders at 1x under an upscaling filter, ignoring the rendering resolution; M33
   keeps the chosen resolution and FSR upscales from it.)
+- Rewind (`ps4/PS4Rewind.cpp`), as RetroArch's: hold L2 and the game plays backwards, let go and it
+  carries on. A snapshot every 4 frames; only the newest is whole, the older ones are compressed
+  differences (2 KB blocks, zstd) in 256 MiB of direct memory of their own, the oldest dropped.
+  Off in RetroAchievements hardcore mode.
 - Video and audio decoding: FFmpeg 7.1 (the rpcs3 port's PS4 build: H.264, ATRAC3/3+, MP3, AAC).
 - UI: PPSSPP's own (controller friendly, device type TV), in the console's language. Text fields
   open the PS4's keyboard (`ps4/PS4Keyboard.cpp`, from Resonance; Cross confirms: param.sfo
