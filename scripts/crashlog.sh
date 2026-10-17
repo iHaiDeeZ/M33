@@ -7,7 +7,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/ps4-env.sh"
 ELF="${1:-$(ls -t "$PS4_BUILD_ROOT"/oelf/v*.elf 2>/dev/null | head -1)}"
-HOST="ftp://${PS4_HOST:-192.168.0.90}:${PS4_FTP_PORT:-2121}"
+HOST="ftp://${PS4_HOST:-192.168.0.212}:${PS4_FTP_PORT:-2121}"
 OUT="$PS4_BUILD_ROOT/logs"
 mkdir -p "$OUT"
 for f in boot-trace.log crash.log hang.log ppsspp.log; do

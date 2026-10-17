@@ -8,7 +8,7 @@
 set -euo pipefail
 PKG="${1:?package path}"
 NAME="$(basename "$PKG")"
-HOST="ftp://${PS4_HOST:-192.168.0.90}:${PS4_FTP_PORT:-2121}"
+HOST="ftp://${PS4_HOST:-192.168.0.212}:${PS4_FTP_PORT:-2121}"
 SIZE="$(stat -c %s "$PKG")"
 export MSYS_NO_PATHCONV=1
 
