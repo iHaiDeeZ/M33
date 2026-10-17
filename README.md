@@ -107,12 +107,9 @@ an EBOOT.PBP made of the disc's PARAM.SFO, ICON0 and PIC1, and M33ISO.TXT naming
 Data lists `PSP/SAVEDATA` (= `/data/March33/PSP/SAVEDATA`). The game browser hides the stand-ins,
 and they go away with their disc.
 
-Game boot: with a firmware installed, every game (from the XMB or M33's browser) starts with the
-PSP's own game boot animation and sound, as on a PSP (`flash0:/vsh/resource/gameboot.pmf`,
-played by `ps4/PS4GameBoot.cpp`; the ATRAC3+ sound goes through PPSSPP's decoder).
-The video is only the background (it ends plain white); the PSP logo over it is the firmware's own
-image, `tex_psp_logo` in `opening_plugin.rco`, read the same way: the RCO's tree and images are
-LZRC ("RLZ") compressed, decoded with PPSSPP's own `lzrc_decompress`, and the image is a GIM.
+Game boot: started from the XMB, a game gets the firmware's own game boot (the emulated PSP plays
+it, as on a PSP) and then boots as the disc. M33 adds none of its own: its imitation (v00.16-v00.23)
+played on top of the real one and is gone; started from M33's own list, a game boots straight in.
 
 Known gap: the XMB's Saved Data column doesn't open yet. The firmware reads the memory stick
 through its raw partition device (`msstor0p1:`) and a `fatms0:` devctl (0x02425856), neither

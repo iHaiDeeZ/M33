@@ -807,17 +807,16 @@ index df985bc..5bf2ed4 100644
  
  void UIBackgroundShutdown() {
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
-index e1a8d56..dd88e1f 100644
+index e1a8d56..3b41851 100644
 --- a/UI/EmuScreen.cpp
 +++ b/UI/EmuScreen.cpp
-@@ -60,6 +60,14 @@ using namespace std::placeholders;
+@@ -60,6 +60,13 @@ using namespace std::placeholders;
  #include "Core/MemFault.h"
  #include "Core/Reporting.h"
  #include "Core/Util/PathUtil.h"
 +#include "Core/Util/RecentFiles.h"
 +
 +#if PPSSPP_PLATFORM(PS4)
-+#include "ps4/PS4GameBoot.h"
 +#include "ps4/PS4Pad.h"
 +#include "ps4/PS4Rewind.h"
 +#include "ps4/PS4XmbGames.h"
@@ -825,37 +824,25 @@ index e1a8d56..dd88e1f 100644
  #include "Core/System.h"
  #include "GPU/Common/PresentationCommon.h"
  #include "GPU/GPUState.h"
-@@ -164,6 +172,10 @@ EmuScreen::EmuScreen(const Path &filename)
+@@ -164,6 +171,9 @@ EmuScreen::EmuScreen(const Path &filename)
  	: gamePath_(filename) {
  	saveStateSlot_ = SaveState::GetCurrentSlot();
  	g_controlMapper.AddListener(this);
 +#if PPSSPP_PLATFORM(PS4)
 +	M33Rewind_Reset();
-+	M33GameBoot_Arm();
 +#endif
  
  	_dbg_assert_(coreState == CORE_POWERDOWN);
  
-@@ -222,6 +234,18 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+@@ -222,7 +232,6 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
  	if (!bootAllowStorage(filename)) {
  		return;
  	}
-+#if PPSSPP_PLATFORM(PS4)
-+	// M33: the PSP's game boot animation (from the installed firmware) before a game, once per boot
-+	{
-+		if (bootPending_ && !readyToFinishBoot_ && PollBootState() == BootState::Off &&
-+				filename.GetFilename() != "vshmain.prx" && M33GameBoot_TakeArm()) {
-+			g_BackgroundAudio.SetGame(Path());  // (the game list's music would play over it)
-+			M33GameBoot_Start();
-+		}
-+		if (M33GameBoot_Playing())
-+			return;
-+	}
-+#endif
- 
+-
  	if (Achievements::IsBlockingExecution()) {
  		// Keep waiting.
-@@ -318,6 +342,13 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+ 		return;
+@@ -318,6 +327,13 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
  	coreParam.enableSound = g_Config.bEnableSound;
  	coreParam.fileToStart = filename;
  	coreParam.mountIso.clear();
@@ -869,7 +856,7 @@ index e1a8d56..dd88e1f 100644
  	coreParam.mountRoot = g_Config.mountRoot;
  	coreParam.startBreak = !g_Config.bAutoRun;
  	coreParam.headLess = false;
-@@ -449,6 +480,9 @@ void EmuScreen::bootComplete() {
+@@ -449,6 +465,9 @@ void EmuScreen::bootComplete() {
  
  EmuScreen::~EmuScreen() {
  	g_controlMapper.RemoveListener(this);
@@ -879,7 +866,7 @@ index e1a8d56..dd88e1f 100644
  
  	std::string gameID = g_paramSFO.GetValueString("DISC_ID");
  	g_Config.TimeTracker().Stop(gameID);
-@@ -1467,6 +1501,7 @@ void EmuScreen::update() {
+@@ -1467,6 +1486,7 @@ void EmuScreen::update() {
  		screenManager()->push(new GamePauseScreen(gamePath_, bootPending_));
  	}
  
@@ -887,7 +874,7 @@ index e1a8d56..dd88e1f 100644
  	if (!PSP_IsInited())
  		return;
  
-@@ -1735,6 +1770,14 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1735,6 +1755,14 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  	PSP_UpdateDebugStats((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::DEBUG_STATS || g_Config.bLogFrameDrops);
  	clearColor_ = 0;
  	bool blockedExecution = Achievements::IsBlockingExecution();
@@ -902,7 +889,7 @@ index e1a8d56..dd88e1f 100644
  	if (!blockedExecution) {
  		// We process savestates before running the frame.
  		SaveState::Process();
-@@ -1805,6 +1848,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1805,6 +1833,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  			// Run post processing and other passes.
  			gpu->PrepareCopyDisplayToOutput(displayLayoutConfig);
  			gpu->EndHostFrame();
@@ -913,7 +900,7 @@ index e1a8d56..dd88e1f 100644
  
  			// The right time to run this
  			if (ScreenshotNotifyPostGameRender(draw) && skipBufferEffects) {
-@@ -1841,6 +1888,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1841,6 +1873,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  }
  
  bool EmuScreen::hasVisibleUI() {
@@ -924,16 +911,11 @@ index e1a8d56..dd88e1f 100644
  	// Regular but uncommon UI.
  	if (saveStatePreview_->GetVisibility() != UI::V_GONE || loadingSpinner_->GetVisibility() == UI::V_VISIBLE)
  		return true;
-@@ -1872,6 +1923,14 @@ void EmuScreen::renderUI() {
+@@ -1872,6 +1908,9 @@ void EmuScreen::renderUI() {
  	// This sets up some important states but not the viewport.
  	ctx->Begin();
  
 +#if PPSSPP_PLATFORM(PS4)
-+	if (M33GameBoot_Playing()) {
-+		M33GameBoot_Draw(*ctx, ctx->GetBounds());
-+		ctx->Flush();
-+		return;
-+	}
 +	M33Rewind_Draw(*ctx, ctx->GetBounds());
 +#endif
  	if (root_) {
@@ -2001,457 +1983,6 @@ index 0000000..870978a
 +float M33_IntroSeconds();
 +// The opening is over (or skipped): stops the clip and its sound.
 +void M33_EndIntro();
-diff --git a/ps4/PS4GameBoot.cpp b/ps4/PS4GameBoot.cpp
-new file mode 100644
-index 0000000..d8e340e
---- /dev/null
-+++ b/ps4/PS4GameBoot.cpp
-@@ -0,0 +1,409 @@
-+// Copyright (c) 2026- PPSSPP Project.
-+
-+// This program is free software: you can redistribute it and/or modify
-+// it under the terms of the GNU General Public License as published by
-+// the Free Software Foundation, version 2.0 or later versions.
-+
-+// This program is distributed in the hope that it will be useful,
-+// but WITHOUT ANY WARRANTY; without even the implied warranty of
-+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-+// GNU General Public License 2.0 for more details.
-+
-+// A copy of the GPL 2.0 should have been included with the program.
-+// If not, see http://www.gnu.org/licenses/
-+
-+// M33: the PSP's game boot animation before a game, as a real PSP plays it, from the installed
-+// firmware (flash0:/vsh/resource/gameboot.pmf; nothing of Sony's is in the package).
-+//
-+// gameboot.pmf is a PSMF: a 2 KB header, then an MPEG program stream with H.264 video (480x272)
-+// and ATRAC3+ audio in private stream 1. The video is played by ps4/PS4StartupClip.cpp from the
-+// stream with the header cut off (cached once next to the memory stick); FFmpeg doesn't take the
-+// PSP's ATRAC framing, so the audio packets are collected here and decoded with PPSSPP's own
-+// ATRAC3+ decoder, then resampled to the audio output's 48 kHz.
-+
-+#include <algorithm>
-+#include <cstring>
-+#include <string>
-+#include <vector>
-+
-+#include "Common/File/FileUtil.h"
-+#include "Common/File/Path.h"
-+#include "Common/Log.h"
-+#include "Common/TimeUtil.h"
-+#include "Core/Config.h"
-+#include "Core/HLE/sceAudiocodec.h"
-+#include "Core/HW/SimpleAudioDec.h"
-+#include "Common/UI/Context.h"
-+#include "Common/GPU/thin3d.h"
-+#include "Common/Render/DrawBuffer.h"
-+#include "ps4/PS4GameBoot.h"
-+#include "ps4/PS4StartupClip.h"
-+
-+int lzrc_decompress(void *out, int out_len, void *in, int in_len);  // Core/FileSystems/tlzrc.cpp
-+
-+namespace {
-+
-+bool g_playing = false;
-+bool g_armed = false;
-+double g_start = 0.0;
-+double g_length = 0.0;
-+
-+u32 Be32(const std::string &d, size_t at) {
-+	return ((u32)(u8)d[at] << 24) | ((u32)(u8)d[at + 1] << 16) | ((u32)(u8)d[at + 2] << 8) | (u32)(u8)d[at + 3];
-+}
-+
-+// The ATRAC3+ elementary stream: the payloads of the private stream 1 packets, minus their
-+// 4-byte sub-stream header.
-+std::string AudioStream(const std::string &pmf, size_t streamStart) {
-+	std::string out;
-+	size_t i = streamStart;
-+	while (i + 9 < pmf.size()) {
-+		const size_t j = pmf.find(std::string("\x00\x00\x01\xbd", 4), i);
-+		if (j == std::string::npos || j + 9 > pmf.size())
-+			break;
-+		const size_t len = ((size_t)(u8)pmf[j + 4] << 8) | (u8)pmf[j + 5];
-+		const size_t headerLen = (u8)pmf[j + 8];
-+		const size_t payload = j + 9 + headerLen;
-+		const size_t end = std::min(pmf.size(), j + 6 + len);
-+		if (payload + 4 < end)
-+			out.append(pmf, payload + 4, end - payload - 4);
-+		i = j + 6 + len;
-+	}
-+	return out;
-+}
-+
-+// 44.1 kHz stereo frames decoded from the PSP's framed ATRAC3+ (8-byte 0F D0 headers).
-+std::vector<int16_t> DecodeAtrac(const std::string &es) {
-+	std::vector<int16_t> pcm;
-+	if (es.size() < 8 || (u8)es[0] != 0x0F || (u8)es[1] != 0xD0)
-+		return pcm;
-+	const size_t blockAlign = ((((u8)es[2] & 3) << 8) | (u8)es[3]) * 8 + 8;
-+	AudioDecoder *dec = CreateAudioDecoder(PSP_CODEC_AT3PLUS, 44100, 2, blockAlign);
-+	if (!dec)
-+		return pcm;
-+	int16_t buf[2048 * 2 * 2];
-+	for (size_t at = 0; at + 8 + blockAlign <= es.size(); at += 8 + blockAlign) {
-+		if ((u8)es[at] != 0x0F || (u8)es[at + 1] != 0xD0)
-+			break;
-+		int consumed = 0, samples = 0;
-+		if (dec->Decode((const uint8_t *)es.data() + at + 8, (int)blockAlign, &consumed, 2, buf, &samples) && samples > 0)
-+			pcm.insert(pcm.end(), buf, buf + samples * 2);
-+	}
-+	delete dec;
-+	return pcm;
-+}
-+
-+std::vector<int16_t> To48k(const std::vector<int16_t> &in) {
-+	const size_t frames = in.size() / 2;
-+	const size_t outFrames = frames * 48000 / 44100;
-+	std::vector<int16_t> out(outFrames * 2);
-+	for (size_t i = 0; i < outFrames; i++) {
-+		const double pos = i * 44100.0 / 48000.0;
-+		const size_t a = std::min(frames - 1, (size_t)pos);
-+		const size_t b = std::min(frames - 1, a + 1);
-+		const double f = pos - a;
-+		for (int c = 0; c < 2; c++)
-+			out[i * 2 + c] = (int16_t)(in[a * 2 + c] * (1.0 - f) + in[b * 2 + c] * f);
-+	}
-+	return out;
-+}
-+
-+// The PSP logo the firmware draws over the end of the video (which is plain white there): the
-+// video is only the background. The logo is the firmware's own image, tex_psp_logo in
-+// flash0:/vsh/resource/opening_plugin.rco (the PSP letters, TM and "PlayStation(R)Portable", 260x80),
-+// read from the installed firmware like the video: an RCO's tree and images are LZRC ("RLZ")
-+// compressed, which PPSSPP decodes already (Core/FileSystems/tlzrc.cpp, for compressed PBPs), and
-+// the image is a GIM (8-bit indexed, swizzled). Layout of both after RCOMage (rcofile.h).
-+// Timed as the firmware's own anim_gameboot_movie (same RCO): the white page in under the video,
-+// after 0.3 s psp_logo fades in over 0.2 s, and at 2.5 s the game goes on.
-+constexpr double kLogoIn = 0.3, kLogoFade = 0.2, kGameBootEnd = 2.5;
-+// psp_logo's place: (13, -9) from the screen's centre (RCO y points up), at its own size.
-+constexpr float kLogoX = 13.0f, kLogoY = -9.0f;
-+
-+std::vector<u8> g_logo;  // RGBA
-+int g_logoW = 0, g_logoH = 0;
-+Draw::Texture *g_logoTex = nullptr;
-+
-+u32 Le32(const u8 *p) {
-+	return p[0] | (p[1] << 8) | (p[2] << 16) | ((u32)p[3] << 24);
-+}
-+
-+u16 Le16(const u8 *p) {
-+	return p[0] | (p[1] << 8);
-+}
-+
-+bool Unpack(int compression, const u8 *src, size_t srcLen, size_t outLen, std::vector<u8> *out) {
-+	out->resize(outLen);
-+	if (compression == 0) {
-+		if (srcLen < outLen)
-+			return false;
-+		memcpy(out->data(), src, outLen);
-+		return true;
-+	}
-+	if (compression == 2) {
-+		std::vector<u8> in(src, src + srcLen);
-+		in.resize(srcLen + 64);  // (the range decoder reads a little ahead)
-+		return lzrc_decompress(out->data(), (int)outLen, in.data(), (int)srcLen) == (int)outLen;
-+	}
-+	return false;
-+}
-+
-+// An image of an RCO by its label, as stored (GIM, PNG, ...).
-+bool RcoImage(const std::string &rco, const char *name, std::vector<u8> *image) {
-+	const u8 *d = (const u8 *)rco.data();
-+	const size_t n = rco.size();
-+	if (n < 0xB0 || memcmp(d, "\0PRF", 4) != 0)
-+		return false;
-+	auto field = [&](int i) { return Le32(d + 0x10 + 4 * i); };
-+	const u32 pImg = field(5), pLabel = field(12), pImgData = field(28);
-+	std::vector<u8> tree;
-+	size_t base = 0;
-+	const int compression = Le32(d + 0x0C) >> 4;
-+	if (compression) {
-+		base = 0xA4;
-+		const u32 packed = Le32(d + 0xA4), unpacked = Le32(d + 0xA8);
-+		if (0xB0 + (size_t)packed > n || unpacked > 4 * 1024 * 1024 || !Unpack(compression, d + 0xB0, packed, unpacked, &tree))
-+			return false;
-+	} else {
-+		tree.assign(d, d + n);
-+	}
-+	auto at = [&](u32 fileOffset, size_t len) -> const u8 * {
-+		const size_t i = (size_t)fileOffset - base;
-+		return fileOffset >= base && i + len <= tree.size() ? tree.data() + i : nullptr;
-+	};
-+	const u8 *table = at(pImg, 0x28);
-+	if (pImg == 0xFFFFFFFF || !table)
-+		return false;
-+	const u32 count = Le32(table + 16);
-+	u32 e = pImg + 0x28;
-+	for (u32 i = 0; i < count; i++) {
-+		const u8 *entry = at(e, 0x38);
-+		if (!entry)
-+			return false;
-+		const u8 *label = at(pLabel + Le32(entry + 4), 1);
-+		const size_t room = label ? tree.size() - (label - tree.data()) : 0;
-+		if (label && strnlen((const char *)label, room) == strlen(name) && memcmp(label, name, strlen(name)) == 0) {
-+			const int comp = Le16(entry + 0x2A);
-+			const u32 packed = Le32(entry + 0x2C), offset = Le32(entry + 0x30);
-+			const u32 size = comp ? Le32(entry + 0x34) : packed;
-+			if ((size_t)pImgData + offset + packed > n || size > 16 * 1024 * 1024)
-+				return false;
-+			return Unpack(comp, d + pImgData + offset, packed, size, image);
-+		}
-+		const u32 next = Le32(entry + 20);
-+		e += next ? next : 0x28;
-+	}
-+	return false;
-+}
-+
-+u32 GimColor(int format, u32 v) {
-+	switch (format) {
-+	case 3: return v;  // RGBA8888
-+	case 2: return ((v & 0xF) * 17) | (((v >> 4) & 0xF) * 17 << 8) | (((v >> 8) & 0xF) * 17 << 16) | ((v >> 12) * 17 << 24);
-+	case 1: return ((v & 31) * 255 / 31) | (((v >> 5) & 31) * 255 / 31 << 8) | (((v >> 10) & 31) * 255 / 31 << 16) | ((v >> 15) ? 0xFF000000 : 0);
-+	default: return ((v & 31) * 255 / 31) | (((v >> 5) & 63) * 255 / 63 << 8) | (((v >> 11) & 31) * 255 / 31 << 16) | 0xFF000000;
-+	}
-+}
-+
-+// A GIM picture as RGBA (the formats the firmware's use: direct 16/32-bit and indexed 4/8-bit).
-+bool DecodeGim(const std::vector<u8> &gim, std::vector<u8> *rgba, int *outW, int *outH) {
-+	const u8 *d = gim.data();
-+	const size_t n = gim.size();
-+	if (n < 0x20 || memcmp(d, "MIG.00.1PSP", 11) != 0)
-+		return false;
-+	struct Pic { int format = -1, order = 0, w = 0, h = 0; const u8 *pixels = nullptr; size_t room = 0; };
-+	Pic image, palette;
-+	std::vector<std::pair<size_t, size_t>> todo = { { 0x10, n } };
-+	while (!todo.empty()) {
-+		size_t off = todo.back().first, end = todo.back().second;
-+		todo.pop_back();
-+		while (off + 0x10 <= end) {
-+			const u16 id = Le16(d + off);
-+			const u32 size = Le32(d + off + 4), data = Le32(d + off + 12);
-+			if (size < 0x10 || off + size > n)
-+				break;
-+			if (id == 2 || id == 3) {
-+				todo.push_back({ off + data, off + size });
-+			} else if ((id == 4 || id == 5) && off + 0x30 <= n) {
-+				const u8 *b = d + off + 0x10;
-+				Pic &pic = id == 4 ? image : palette;
-+				pic.format = Le16(b + 4);
-+				pic.order = Le16(b + 6);
-+				pic.w = Le16(b + 8);
-+				pic.h = Le16(b + 10);
-+				const u32 pix = Le32(b + 0x1C);
-+				if (off + 0x10 + pix < off + size) {
-+					pic.pixels = b + pix;
-+					pic.room = off + size - (off + 0x10 + pix);
-+				}
-+			}
-+			off += size;
-+		}
-+	}
-+	if (!image.pixels || image.w <= 0 || image.h <= 0 || image.w > 1024 || image.h > 1024)
-+		return false;
-+	static const int kBits[] = { 16, 16, 16, 32, 4, 8 };
-+	if (image.format < 0 || image.format > 5)
-+		return false;
-+	const int bits = kBits[image.format];
-+	const int perBlock = 128 / bits;  // a row is a whole number of 16-byte blocks
-+	const size_t rowBytes = (size_t)((image.w + perBlock - 1) / perBlock) * 16;
-+	const int rows = image.order == 1 ? (image.h + 7) / 8 * 8 : image.h;
-+	if (rowBytes * rows > image.room)
-+		return false;
-+	std::vector<u8> linear(rowBytes * rows);
-+	if (image.order == 1) {
-+		// "faster" order: 16-byte by 8-row blocks
-+		const u8 *src = image.pixels;
-+		for (int by = 0; by < rows; by += 8)
-+			for (size_t bx = 0; bx < rowBytes / 16; bx++)
-+				for (int y = 0; y < 8; y++, src += 16)
-+					memcpy(&linear[(by + y) * rowBytes + bx * 16], src, 16);
-+	} else {
-+		memcpy(linear.data(), image.pixels, linear.size());
-+	}
-+	std::vector<u32> colors;
-+	if (image.format >= 4) {
-+		if (!palette.pixels || palette.format < 0 || palette.format > 3)
-+			return false;
-+		const int pbytes = palette.format == 3 ? 4 : 2;
-+		const int entries = std::min<int>(palette.w * std::max(1, palette.h), (int)(palette.room / pbytes));
-+		for (int i = 0; i < entries; i++)
-+			colors.push_back(GimColor(palette.format, pbytes == 4 ? Le32(palette.pixels + i * 4) : Le16(palette.pixels + i * 2)));
-+		colors.resize(256, 0);
-+	}
-+	rgba->resize((size_t)image.w * image.h * 4);
-+	u32 *out = (u32 *)rgba->data();
-+	for (int y = 0; y < image.h; y++) {
-+		const u8 *row = &linear[y * rowBytes];
-+		for (int x = 0; x < image.w; x++) {
-+			u32 c;
-+			switch (image.format) {
-+			case 4: c = colors[(row[x / 2] >> ((x & 1) * 4)) & 15]; break;
-+			case 5: c = colors[row[x]]; break;
-+			case 3: c = Le32(row + x * 4); break;
-+			default: c = GimColor(image.format, Le16(row + x * 2)); break;
-+			}
-+			out[y * image.w + x] = c;
-+		}
-+	}
-+	*outW = image.w;
-+	*outH = image.h;
-+	return true;
-+}
-+
-+void LoadLogo() {
-+	if (!g_logo.empty())
-+		return;
-+	std::string rco;
-+	std::vector<u8> gim;
-+	const Path path = g_Config.nandRootDirectory / "flash0/vsh/resource/opening_plugin.rco";
-+	if (File::ReadBinaryFileToString(path, &rco) && RcoImage(rco, "tex_psp_logo", &gim) && DecodeGim(gim, &g_logo, &g_logoW, &g_logoH)) {
-+		NOTICE_LOG(Log::Loader, "Game boot: the PSP logo from the firmware, %dx%d", g_logoW, g_logoH);
-+	} else {
-+		g_logo.clear();
-+		WARN_LOG(Log::Loader, "Game boot: no PSP logo in %s", path.c_str());
-+	}
-+}
-+
-+void DrawLogo(UIContext &dc, const Bounds &pic, float a) {
-+	if (a <= 0.0f || g_logo.empty())
-+		return;
-+	Draw::DrawContext *draw = dc.GetDrawContext();
-+	if (!g_logoTex) {
-+		Draw::TextureDesc desc{};
-+		desc.type = Draw::TextureType::LINEAR2D;
-+		desc.format = Draw::DataFormat::R8G8B8A8_UNORM;
-+		desc.width = g_logoW;
-+		desc.height = g_logoH;
-+		desc.depth = 1;
-+		desc.mipLevels = 1;
-+		desc.tag = "M33GameBootLogo";
-+		desc.initData.push_back(g_logo.data());
-+		g_logoTex = draw->CreateTexture(desc);
-+		if (!g_logoTex)
-+			return;
-+	}
-+	// at the PSP's own size on its 480x272 screen, where the firmware puts it
-+	const float s = pic.w / 480.0f;
-+	const float w = g_logoW * s, h = g_logoH * s;
-+	const Bounds logo(pic.centerX() + kLogoX * s - w / 2.0f, pic.centerY() - kLogoY * s - h / 2.0f, w, h);
-+	const u32 alpha = (u32)(std::clamp(a, 0.0f, 1.0f) * 255.0f);
-+	dc.Begin();
-+	draw->BindTexture(0, g_logoTex);
-+	dc.Draw()->DrawTexRect(logo, 0, 0, 1, 1, (alpha << 24) | 0xFFFFFF);
-+	dc.Flush();
-+	dc.RebindTexture();
-+}
-+
-+}  // namespace
-+
-+bool M33GameBoot_Start() {
-+	M33GameBoot_Stop();
-+	const Path pmfPath = g_Config.nandRootDirectory / "flash0/vsh/resource/gameboot.pmf";
-+	std::string pmf;
-+	if (!File::ReadBinaryFileToString(pmfPath, &pmf) || pmf.size() < 0x800 || pmf.compare(0, 4, "PSMF") != 0)
-+		return false;
-+	const size_t streamStart = Be32(pmf, 8);
-+	if (streamStart >= pmf.size())
-+		return false;
-+	// The video, without the PSMF header, for FFmpeg (written once)
-+	const Path cache = g_Config.memStickDirectory / "PSP/SYSTEM/CACHE";
-+	const Path mps = cache / "m33_gameboot.mps";
-+	if (File::GetFileSize(mps) != pmf.size() - streamStart) {
-+		File::CreateFullPath(cache);
-+		File::WriteDataToFile(false, pmf.data() + streamStart, pmf.size() - streamStart, mps);
-+	}
-+	if (!M33Clip::Open(mps.ToString()))
-+		return false;
-+	std::vector<int16_t> pcm = To48k(DecodeAtrac(AudioStream(pmf, streamStart)));
-+	const double pcmSeconds = pcm.size() / 2 / 48000.0;
-+	g_length = std::max<double>(M33Clip::Duration(), pcmSeconds);
-+	if (g_length < 0.5)
-+		g_length = 2.6;
-+	g_length = std::max(g_length, kGameBootEnd);
-+	if (!pcm.empty())
-+		M33Clip::SetSound(std::move(pcm));
-+	LoadLogo();
-+	g_start = time_now_d();
-+	g_playing = true;
-+	NOTICE_LOG(Log::Loader, "Game boot animation: %.2f s (video %.2f s, sound %.2f s)", g_length, M33Clip::Duration(), pcmSeconds);
-+	return true;
-+}
-+
-+void M33GameBoot_Arm() {
-+	g_armed = true;
-+}
-+
-+bool M33GameBoot_TakeArm() {
-+	const bool armed = g_armed;
-+	g_armed = false;
-+	return armed;
-+}
-+
-+bool M33GameBoot_Playing() {
-+	if (g_playing && time_now_d() - g_start > g_length + 0.15)
-+		M33GameBoot_Stop();
-+	return g_playing;
-+}
-+
-+void M33GameBoot_Draw(UIContext &dc, const Bounds &bounds) {
-+	if (!g_playing)
-+		return;
-+	const double t = time_now_d() - g_start;
-+	M33Clip::Draw(dc, bounds, t);
-+	// over the video's picture, letterboxed as M33Clip draws it
-+	const float s = std::min(bounds.w / 480.0f, bounds.h / 272.0f);
-+	const Bounds pic(bounds.centerX() - 240.0f * s, bounds.centerY() - 136.0f * s, 480.0f * s, 272.0f * s);
-+	DrawLogo(dc, pic, (float)((t - kLogoIn) / kLogoFade));
-+}
-+
-+void M33GameBoot_Stop() {
-+	if (g_logoTex) {
-+		g_logoTex->Release();
-+		g_logoTex = nullptr;
-+	}
-+	if (g_playing)
-+		M33Clip::Close();
-+	g_playing = false;
-+}
-diff --git a/ps4/PS4GameBoot.h b/ps4/PS4GameBoot.h
-new file mode 100644
-index 0000000..7274120
---- /dev/null
-+++ b/ps4/PS4GameBoot.h
-@@ -0,0 +1,30 @@
-+// Copyright (c) 2026- PPSSPP Project.
-+
-+// This program is free software: you can redistribute it and/or modify
-+// it under the terms of the GNU General Public License as published by
-+// the Free Software Foundation, version 2.0 or later versions.
-+
-+// This program is distributed in the hope that it will be useful,
-+// but WITHOUT ANY WARRANTY; without even the implied warranty of
-+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-+// GNU General Public License 2.0 for more details.
-+
-+// A copy of the GPL 2.0 should have been included with the program.
-+// If not, see http://www.gnu.org/licenses/
-+
-+// M33: the PSP's game boot animation before a game (ps4/PS4GameBoot.cpp).
-+
-+#pragma once
-+
-+class UIContext;
-+struct Bounds;
-+
-+// Starts it, from the installed firmware; false if there is none (the game just boots).
-+bool M33GameBoot_Start();
-+// Once per boot: Arm() when a game's screen is made, TakeArm() true the first time after it.
-+void M33GameBoot_Arm();
-+bool M33GameBoot_TakeArm();
-+// Whether it's still on (the game's boot waits).
-+bool M33GameBoot_Playing();
-+void M33GameBoot_Draw(UIContext &dc, const Bounds &bounds);
-+void M33GameBoot_Stop();
 diff --git a/ps4/PS4Keyboard.cpp b/ps4/PS4Keyboard.cpp
 new file mode 100644
 index 0000000..220e547
@@ -5308,10 +4839,10 @@ index 0000000..0a6709e
 +void M33Xmb_PrepareGames(const Path &gamesDir);
 diff --git a/ps4/ps4.cmake b/ps4/ps4.cmake
 new file mode 100644
-index 0000000..1115385
+index 0000000..c426de6
 --- /dev/null
 +++ b/ps4/ps4.cmake
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,39 @@
 +# M33: PPSSPP's PS4 frontend, included from the top CMakeLists.txt once ${TargetBin} exists.
 +# Built with M33's toolchain (toolchain/ps4-m33.cmake, and ps4-love-style.cmake as the project
 +# include: PS4_RUNTIME_SOURCES, ps4_link_mesa, ps4_add_eboot).
@@ -5322,8 +4853,6 @@ index 0000000..1115385
 +	ps4/PS4Audio.h
 +	ps4/PS4Brand.cpp
 +	ps4/PS4Brand.h
-+	ps4/PS4GameBoot.cpp
-+	ps4/PS4GameBoot.h
 +	ps4/PS4Keyboard.cpp
 +	ps4/PS4Keyboard.h
 +	ps4/PS4Pad.cpp
