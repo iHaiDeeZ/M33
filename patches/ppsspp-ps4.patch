@@ -3551,10 +3551,10 @@ index 0000000..2357597
 +void M33Rewind_Reset();
 diff --git a/ps4/PS4StartupClip.cpp b/ps4/PS4StartupClip.cpp
 new file mode 100644
-index 0000000..983e6da
+index 0000000..f2b0e93
 --- /dev/null
 +++ b/ps4/PS4StartupClip.cpp
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,356 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3633,6 +3633,11 @@ index 0000000..983e6da
 +int g_texNext = 0;
 +Draw::Texture *g_current = nullptr;
 +double g_currentTime = -1.0;
++// What happened, for the log when it closes
++std::atomic<int> g_decoded{ 0 };
++int g_draws = 0, g_shown = 0;
++float g_drawW = 0, g_drawH = 0;
++double g_firstTime = -1.0, g_lastT = 0.0;
 +
 +// All of the clip's sound as 48 kHz interleaved stereo.
 +bool DecodeSound(const std::string &path, std::vector<int16_t> *out) {
@@ -3712,6 +3717,8 @@ index 0000000..983e6da
 +				avcodec_free_context(&ctx);
 +		}
 +	}
++	if (!ctx)
++		NOTICE_LOG(Log::System, "M33Clip: no picture decoder for %s (stream %d)", path.c_str(), si);
 +	int64_t firstPts = AV_NOPTS_VALUE;  // times from the first frame (a PSMF's start at 1 s)
 +	auto emit = [&](AVFrame *f) {
 +		if (!sws)
@@ -3728,8 +3735,11 @@ index 0000000..983e6da
 +		sws_scale(sws, f->data, f->linesize, 0, f->height, dst, stride);
 +		std::unique_lock<std::mutex> lock(g_lock);
 +		g_cv.wait(lock, [] { return g_stop || (int)g_queue.size() < kQueueMax; });
-+		if (!g_stop)
++		if (!g_stop) {
++			if (g_decoded++ == 0)
++				g_firstTime = out.time;
 +			g_queue.push_back(std::move(out));
++		}
 +	};
 +	if (ctx) {
 +		while (!g_stop && av_read_frame(fmt, pkt) >= 0) {
@@ -3790,7 +3800,7 @@ index 0000000..983e6da
 +	g_currentTime = -1.0;
 +	g_thread = std::thread(DecodePicture, path);
 +	g_active = true;
-+	INFO_LOG(Log::System, "M33Clip: %s, %dx%d, %.2f s, %zu sound frames", path.c_str(), g_width, g_height, g_duration, g_sound.size() / 2);
++	NOTICE_LOG(Log::System, "M33Clip: %s, %dx%d, %.2f s, %zu sound frames", path.c_str(), g_width, g_height, g_duration, g_sound.size() / 2);
 +	return true;
 +}
 +
@@ -3809,6 +3819,10 @@ index 0000000..983e6da
 +void Draw(UIContext &dc, const Bounds &bounds, double t) {
 +	if (!g_active)
 +		return;
++	g_draws++;
++	g_lastT = t;
++	g_drawW = bounds.w;
++	g_drawH = bounds.h;
 +	if (!g_soundStarted) {
 +		g_soundStarted = true;
 +		if (!g_sound.empty())
@@ -3847,6 +3861,7 @@ index 0000000..983e6da
 +		const uint8_t *levels[1] = { due.rgba.data() };
 +		draw->UpdateTextureLevels(g_tex[g_texNext], levels, Draw::TextureCallback(), 1);
 +		g_current = g_tex[g_texNext];
++		g_shown++;
 +		g_currentTime = due.time;
 +		g_texNext = (g_texNext + 1) % kTextures;
 +	}
@@ -3867,6 +3882,13 @@ index 0000000..983e6da
 +}
 +
 +void Close() {
++	if (g_active)
++		NOTICE_LOG(Log::System, "M33Clip: closed %s: %d pictures decoded (first at %.2f s), %d shown in %d draws of %.0fx%.0f, up to %.2f s; textures %s",
++			g_path.c_str(), g_decoded.load(), g_firstTime, g_shown, g_draws, g_drawW, g_drawH, g_lastT, g_tex[0] ? "made" : "none");
++	g_decoded = 0;
++	g_draws = g_shown = 0;
++	g_firstTime = -1.0;
++	g_lastT = 0.0;
 +	if (g_thread.joinable()) {
 +		{
 +			std::lock_guard<std::mutex> guard(g_lock);
