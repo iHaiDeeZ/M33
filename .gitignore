@@ -5,3 +5,5 @@ modules/
 out/
 build/
 *.tar
+# the startup preview carries the user's own PSP startup video (Sony content): never committed
+brand/startup/
