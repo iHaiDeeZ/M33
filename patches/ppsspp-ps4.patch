@@ -583,6 +583,30 @@ index 3adb876..0b9e22e 100644
  	int iRemoteISOPort; // Also used for serving a local remote debugger.
  	std::string sLastRemoteISOServer;
  	int iLastRemoteISOPort;
+diff --git a/Core/HLE/sceKernelModule.cpp b/Core/HLE/sceKernelModule.cpp
+index dce0c21..b7d357a 100644
+--- a/Core/HLE/sceKernelModule.cpp
++++ b/Core/HLE/sceKernelModule.cpp
+@@ -2535,6 +2535,19 @@ int __KernelGPUReplay() {
+ 
+ int sceKernelLoadExec(const char *filename, u32 paramPtr) {
+ 	std::string exec_filename = filename;
++#if PPSSPP_PLATFORM(PS4)
++	// M33: the XMB launching one of the stand-ins for a disc (ps4/PS4XmbGames.cpp): boot that disc.
++	{
++		const size_t slash = exec_filename.find_last_of('/');
++		std::vector<uint8_t> marker;
++		if (slash != std::string::npos && pspFileSystem.ReadEntireFile(exec_filename.substr(0, slash) + "/M33ISO.TXT", marker) >= 0 && !marker.empty()) {
++			const std::string disc(marker.begin(), marker.end());
++			INFO_LOG(Log::Loader, "XMB: launching %s", disc.c_str());
++			System_PostUIMessage(UIMessage::REQUEST_GAME_BOOT, disc);
++			return hleLogInfo(Log::Loader, 0, "M33: booting the disc");
++		}
++	}
++#endif
+ 	PSPFileInfo info = pspFileSystem.GetFileInfo(exec_filename);
+ 
+ 	// If there's an EBOOT.BIN, redirect to that instead.
 diff --git a/Core/HLE/sceMpeg.cpp b/Core/HLE/sceMpeg.cpp
 index 53b7fb3..2d8daad 100644
 --- a/Core/HLE/sceMpeg.cpp
@@ -679,25 +703,6 @@ index 813e3d4..04411ac 100644
  	AVCodecContext  *codecCtx_ = nullptr;
  	SwrContext      *swrCtx_ = nullptr;
  
-diff --git a/Core/Loaders.cpp b/Core/Loaders.cpp
-index 6b13248..9748694 100644
---- a/Core/Loaders.cpp
-+++ b/Core/Loaders.cpp
-@@ -349,10 +349,14 @@ Path ResolvePBPFile(const Path &filename) {
- bool UmdReplace(const Path &filepath, FileLoader **fileLoader, std::string &error) {
- 	IFileSystem *currentUMD = pspFileSystem.GetSystem("disc0:");
- 
-+#if !PPSSPP_PLATFORM(PS4)
- 	if (!currentUMD) {
- 		error = "has no disc";
- 		return false;
- 	}
-+#else
-+	(void)currentUMD;  // M33: inserting into the XMB's empty drive mounts the disc fresh (MountGameISO)
-+#endif
- 
- 	FileLoader *loadedFile = ConstructFileLoader(filepath);
- 
 diff --git a/Core/PSPLoaders.cpp b/Core/PSPLoaders.cpp
 index 4b9f88d..f53b3aa 100644
 --- a/Core/PSPLoaders.cpp
@@ -731,61 +736,39 @@ index df985bc..5bf2ed4 100644
  
  void UIBackgroundShutdown() {
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
-index e1a8d56..4e0d809 100644
+index e1a8d56..fb713f6 100644
 --- a/UI/EmuScreen.cpp
 +++ b/UI/EmuScreen.cpp
-@@ -60,6 +60,15 @@ using namespace std::placeholders;
+@@ -60,6 +60,11 @@ using namespace std::placeholders;
  #include "Core/MemFault.h"
  #include "Core/Reporting.h"
  #include "Core/Util/PathUtil.h"
 +#include "Core/Util/RecentFiles.h"
 +
 +#if PPSSPP_PLATFORM(PS4)
-+#include "Core/HLE/sceUmd.h"
-+// M33: the disc that goes into the XMB's drive once it's up, and when (time_now_d)
-+static Path g_m33XmbDisc;
-+static double g_m33XmbDiscAt = 0.0;
-+static constexpr double kM33XmbDiscDelay = 12.0;  // past the XMB's opening (about 8 s)
++#include "ps4/PS4XmbGames.h"
 +#endif
  #include "Core/System.h"
  #include "GPU/Common/PresentationCommon.h"
  #include "GPU/GPUState.h"
-@@ -318,6 +327,24 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+@@ -318,6 +323,13 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
  	coreParam.enableSound = g_Config.bEnableSound;
  	coreParam.fileToStart = filename;
  	coreParam.mountIso.clear();
 +#if PPSSPP_PLATFORM(PS4)
-+	// M33: booting the XMB, the last disc game played is in its UMD drive (a real PSP's XMB lists
-+	// the disc and the memory stick's PSP/GAME, never loose ISO files).
-+	// The firmware boots a disc that is in the drive at power-on, so the drive starts empty and the
-+	// disc goes in once the XMB is up (EmuScreen::update), like one inserted into a running PSP.
-+	g_m33XmbDisc.clear();
-+	if (filename.GetFilename() == "vshmain.prx") {
-+		for (const std::string &recent : g_recentFiles.GetRecentFiles()) {
-+			const Path disc(recent);
-+			const std::string ext = disc.GetFileExtension();
-+			if ((ext == ".iso" || ext == ".cso" || ext == ".chd") && File::Exists(disc)) {
-+				g_m33XmbDisc = disc;
-+				g_m33XmbDiscAt = time_now_d() + kM33XmbDiscDelay;
-+				break;
-+			}
-+		}
-+	}
++	// M33: booting the XMB, every disc in the games folder gets a stand-in in the memory stick's
++	// PSP/GAME, so the Game column lists them all (ps4/PS4XmbGames.cpp). The drive stays empty: the
++	// firmware boots a disc that is in it at power-on.
++	if (filename.GetFilename() == "vshmain.prx")
++		M33Xmb_PrepareGames(Path("/data/March33/games"));
 +#endif
  	coreParam.mountRoot = g_Config.mountRoot;
  	coreParam.startBreak = !g_Config.bAutoRun;
  	coreParam.headLess = false;
-@@ -1467,6 +1494,14 @@ void EmuScreen::update() {
+@@ -1467,6 +1479,7 @@ void EmuScreen::update() {
  		screenManager()->push(new GamePauseScreen(gamePath_, bootPending_));
  	}
  
-+#if PPSSPP_PLATFORM(PS4)
-+	if (!g_m33XmbDisc.empty() && PSP_IsInited() && time_now_d() >= g_m33XmbDiscAt) {
-+		INFO_LOG(Log::Loader, "XMB: inserting %s", g_m33XmbDisc.c_str());
-+		__UmdReplace(g_m33XmbDisc);
-+		g_m33XmbDisc.clear();
-+	}
-+#endif
 +
  	if (!PSP_IsInited())
  		return;
@@ -890,6 +873,22 @@ index 9f3e495..da47ce4 100644
  
  	Path nandRoot_;
  	InstalledFirmwareInfo info_;
+diff --git a/UI/GameBrowser.cpp b/UI/GameBrowser.cpp
+index b205c73..80e8219 100644
+--- a/UI/GameBrowser.cpp
++++ b/UI/GameBrowser.cpp
+@@ -1096,6 +1096,11 @@ void GameBrowser::Refresh() {
+ 		std::vector<File::FileInfo> fileInfo;
+ 		path_.GetListing(fileInfo, "iso:cso:chd:pbp:elf:prx:ppdmp:");
+ 		for (size_t i = 0; i < fileInfo.size(); i++) {
++#if PPSSPP_PLATFORM(PS4)
++			// M33: the XMB's stand-ins for disc games (ps4/PS4XmbGames.cpp)
++			if (fileInfo[i].isDirectory && startsWith(fileInfo[i].name, "M33ISO_"))
++				continue;
++#endif
+ 			bool isGame = !fileInfo[i].isDirectory;
+ 			bool isSaveData = false;
+ 			// Check if eboot directory. TODO: Should ideally be done off-thread somehow.
 diff --git a/UI/MainScreen.cpp b/UI/MainScreen.cpp
 index 03d80c5..99e25b5 100644
 --- a/UI/MainScreen.cpp
@@ -3815,12 +3814,211 @@ index 0000000..1a3454c
 +// vkGetInstanceProcAddr of the statically linked RADV, with the PS4 surface and swapchain
 +// (VK_EXT_headless_surface + VK_KHR_swapchain on VideoOut) added.
 +PFN_vkGetInstanceProcAddr ps4_vk_get_instance_proc_addr();
+diff --git a/ps4/PS4XmbGames.cpp b/ps4/PS4XmbGames.cpp
+new file mode 100644
+index 0000000..5466dc2
+--- /dev/null
++++ b/ps4/PS4XmbGames.cpp
+@@ -0,0 +1,165 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++// M33: the user's disc games in the XMB's Game column, as CFW ISO drivers had them.
++//
++// The XMB lists the memory stick's PSP/GAME folders that hold an EBOOT.PBP, and reads only the
++// PBP's PARAM.SFO, ICON0.PNG and PIC1.PNG to show them. So before it boots, every ISO / CSO / CHD in
++// the games folder gets a stand-in, PSP/GAME/M33ISO_<disc id>/EBOOT.PBP, made of those three files
++// from the disc (the category made a memory stick game's), next to M33ISO.TXT naming the disc.
++// When the XMB launches one, sceKernelLoadExec (Core/HLE/sceKernelModule.cpp) finds M33ISO.TXT
++// and boots the disc instead. The game browser hides the stand-ins (UI/GameBrowser.cpp).
++
++#include <cstring>
++#include <string>
++#include <vector>
++
++#include "Common/File/DirListing.h"
++#include "Common/File/FileUtil.h"
++#include "Common/File/Path.h"
++#include "Common/Log.h"
++#include "Common/StringUtils.h"
++#include "Core/ELF/ParamSFO.h"
++#include "Core/FileSystems/BlockDevices.h"
++#include "Core/FileSystems/FileSystem.h"
++#include "Core/FileSystems/ISOFileSystem.h"
++#include "Core/Loaders.h"
++#include "Core/Util/PathUtil.h"
++#include "ps4/PS4XmbGames.h"
++
++namespace {
++
++constexpr const char *kPrefix = "M33ISO_";
++constexpr const char *kMarker = "M33ISO.TXT";
++
++bool ReadIsoFile(ISOFileSystem &fs, const char *name, std::string *out) {
++	PSPFileInfo info = fs.GetFileInfo(name);
++	if (!info.exists || info.size <= 0 || info.size > 16 * 1024 * 1024)
++		return false;
++	const int handle = fs.OpenFile(name, FILEACCESS_READ);
++	if (handle < 0)
++		return false;
++	out->resize((size_t)info.size);
++	const size_t got = fs.ReadFile(handle, (u8 *)&(*out)[0], info.size);
++	fs.CloseFile(handle);
++	out->resize(got);
++	return got > 0;
++}
++
++void Put32(std::string *s, size_t at, u32 v) {
++	memcpy(&(*s)[at], &v, 4);
++}
++
++// A PBP: PARAM.SFO, ICON0.PNG, ICON1.PMF, PIC0.PNG, PIC1.PNG, SND0.AT3, DATA.PSP, DATA.PSAR.
++std::string MakePBP(const std::string &sfo, const std::string &icon0, const std::string &pic1) {
++	const std::string *parts[8] = { &sfo, &icon0, nullptr, nullptr, &pic1, nullptr, nullptr, nullptr };
++	std::string pbp(0x28, '\0');
++	pbp[1] = 'P'; pbp[2] = 'B'; pbp[3] = 'P';
++	Put32(&pbp, 4, 0x00010000);
++	for (int i = 0; i < 8; i++) {
++		Put32(&pbp, 8 + i * 4, (u32)pbp.size());
++		if (parts[i])
++			pbp += *parts[i];
++	}
++	return pbp;
++}
++
++std::string SafeId(const std::string &id) {
++	std::string out;
++	for (char c : id)
++		out += isalnum((unsigned char)c) ? c : '_';
++	return out.empty() ? "UNKNOWN" : out;
++}
++
++// One disc's stand-in; false if the disc can't be read as a PSP game.
++bool MakeStandIn(const Path &disc, const Path &gameDir) {
++	std::unique_ptr<FileLoader> loader(ConstructFileLoader(disc));
++	if (!loader || !loader->Exists())
++		return false;
++	std::string error;
++	std::shared_ptr<BlockDevice> bd(ConstructBlockDevice(loader.get(), &error));
++	if (!bd)
++		return false;
++	SequentialHandleAllocator handles;
++	ISOFileSystem umd(&handles, bd);
++	std::string sfoData, icon0, pic1;
++	if (!ReadIsoFile(umd, "/PSP_GAME/PARAM.SFO", &sfoData))
++		return false;
++	ReadIsoFile(umd, "/PSP_GAME/ICON0.PNG", &icon0);
++	ReadIsoFile(umd, "/PSP_GAME/PIC1.PNG", &pic1);
++
++	ParamSFOData sfo;
++	if (!sfo.ReadSFO((const u8 *)sfoData.data(), sfoData.size()))
++		return false;
++	const std::string discId = sfo.GetValueString("DISC_ID");
++	// a memory stick game in the XMB's eyes
++	sfo.SetValue("CATEGORY", "MG", 4);
++	u8 *newSfo = nullptr;
++	size_t newSize = 0;
++	sfo.WriteSFO(&newSfo, &newSize);
++	const std::string sfoOut((const char *)newSfo, newSize);
++	delete[] newSfo;
++
++	const Path dir = gameDir / (std::string(kPrefix) + SafeId(discId));
++	File::CreateFullPath(dir);
++	const std::string pbp = MakePBP(sfoOut, icon0, pic1);
++	const std::string marker = disc.ToString();
++	return File::WriteDataToFile(false, pbp.data(), pbp.size(), dir / "EBOOT.PBP") &&
++		File::WriteDataToFile(false, marker.data(), marker.size(), dir / kMarker);
++}
++
++}  // namespace
++
++void M33Xmb_PrepareGames(const Path &gamesDir) {
++	const Path gameDir = GetSysDirectory(DIRECTORY_GAME);
++	File::CreateFullPath(gameDir);
++
++	// The stand-ins already there, and the discs they stand for.
++	std::vector<File::FileInfo> existing;
++	File::GetFilesInDir(gameDir, &existing, nullptr, File::GETFILES_GETHIDDEN);
++	std::vector<std::string> covered;
++	for (const File::FileInfo &f : existing) {
++		if (!f.isDirectory || !startsWith(f.name, kPrefix))
++			continue;
++		std::string disc;
++		File::ReadTextFileToString(f.fullName / kMarker, &disc);
++		if (disc.empty() || !File::Exists(Path(disc)) || !File::Exists(f.fullName / "EBOOT.PBP")) {
++			// the disc is gone (or the stand-in is incomplete): remove it
++			File::DeleteDirRecursively(f.fullName);
++			continue;
++		}
++		covered.push_back(disc);
++	}
++
++	std::vector<File::FileInfo> discs;
++	File::GetFilesInDir(gamesDir, &discs, nullptr, 0);
++	int made = 0;
++	for (const File::FileInfo &f : discs) {
++		if (f.isDirectory)
++			continue;
++		const std::string ext = f.fullName.GetFileExtension();
++		if (ext != ".iso" && ext != ".cso" && ext != ".chd")
++			continue;
++		bool known = false;
++		for (const std::string &c : covered)
++			known |= c == f.fullName.ToString();
++		if (known)
++			continue;
++		if (MakeStandIn(f.fullName, gameDir))
++			made++;
++		else
++			WARN_LOG(Log::Loader, "XMB: %s isn't a PSP game disc, not listed", f.fullName.c_str());
++	}
++	INFO_LOG(Log::Loader, "XMB: %d discs listed (%d new)", (int)covered.size() + made, made);
++}
+diff --git a/ps4/PS4XmbGames.h b/ps4/PS4XmbGames.h
+new file mode 100644
+index 0000000..0a6709e
+--- /dev/null
++++ b/ps4/PS4XmbGames.h
+@@ -0,0 +1,22 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++// M33: the disc games in the XMB's Game column (ps4/PS4XmbGames.cpp).
++
++#pragma once
++
++class Path;
++
++// Makes (or removes) the memory stick stand-ins for the discs in gamesDir. Before the XMB boots.
++void M33Xmb_PrepareGames(const Path &gamesDir);
 diff --git a/ps4/ps4.cmake b/ps4/ps4.cmake
 new file mode 100644
-index 0000000..8265d01
+index 0000000..75c1f4f
 --- /dev/null
 +++ b/ps4/ps4.cmake
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,37 @@
 +# M33: PPSSPP's PS4 frontend, included from the top CMakeLists.txt once ${TargetBin} exists.
 +# Built with M33's toolchain (toolchain/ps4-m33.cmake, and ps4-love-style.cmake as the project
 +# include: PS4_RUNTIME_SOURCES, ps4_link_mesa, ps4_add_eboot).
@@ -3840,6 +4038,8 @@ index 0000000..8265d01
 +	ps4/PS4Stubs.c
 +	ps4/PS4VulkanWSI.cpp
 +	ps4/PS4VulkanWSI.h
++	ps4/PS4XmbGames.cpp
++	ps4/PS4XmbGames.h
 +	${PS4_RUNTIME_SOURCES})
 +
 +# FreeBSD kernel without sockets for local IPC or serial ports

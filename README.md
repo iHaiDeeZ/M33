@@ -89,11 +89,13 @@ Settings > System > PSP Firmware > Launch XMB. M33 adds **Start in the XMB** the
 straight into it after its opening, and leaving it (or L3 + R3 > Exit to menu) comes back to M33's
 menus. Hold **L1** while M33 starts to skip it once.
 
-What it shows: like a real PSP's, the XMB lists the disc in the UMD drive and the memory stick's
-games (`PSP/GAME`, as EBOOT.PBP) and saves (`PSP/SAVEDATA` = `/data/March33/PSP/SAVEDATA`), never
-loose ISO files. M33 puts the last disc game you played (ISO, CSO or CHD) in the drive when the
-XMB is up (12 s after it starts: the firmware boots a disc that is there at power-on), and it
-stays in the drive until you start it from the Game column.
+What it shows: the XMB's Game column lists the memory stick's games (`PSP/GAME`) and, as CFW ISO
+drivers did, **every disc game in `/data/March33/games`** (ISO, CSO, CHD) with its own icon and
+background: before the XMB boots, M33 writes a stand-in for each (`PSP/GAME/M33ISO_<disc id>/`:
+an EBOOT.PBP made of the disc's PARAM.SFO, ICON0 and PIC1, and M33ISO.TXT naming the disc;
+`ps4/PS4XmbGames.cpp`). Starting one from the XMB boots the disc (`sceKernelLoadExec`). Saved
+Data lists `PSP/SAVEDATA` (= `/data/March33/PSP/SAVEDATA`). The game browser hides the stand-ins,
+and they go away with their disc.
 
 Installing a firmware (Sony's files, not included): **Download PSP firmware 6.61 from Sony** on
 the same screen fetches Sony's official updater from its update server (32.6 MB, kept in
