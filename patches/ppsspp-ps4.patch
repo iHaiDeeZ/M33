@@ -752,7 +752,7 @@ index 03d80c5..99e25b5 100644
  	if (!portrait) {
  		parent->Add(new Spacer(16.0));
 diff --git a/UI/MiscScreens.cpp b/UI/MiscScreens.cpp
-index 6cd4394..5cb22b8 100644
+index 6cd4394..4f27568 100644
 --- a/UI/MiscScreens.cpp
 +++ b/UI/MiscScreens.cpp
 @@ -60,6 +60,9 @@
@@ -765,19 +765,30 @@ index 6cd4394..5cb22b8 100644
  
  void HandleCommonMessages(UIMessage message, const char *value, ScreenManager *manager, const Screen *activeScreen) {
  	bool isActiveScreen = manager->topScreen() == activeScreen;
-@@ -388,7 +391,11 @@ void LogoScreen::Next() {
+@@ -360,6 +363,9 @@ void NewLanguageScreen::OnCompleted(DialogResult result) {
+ }
+ 
+ void LogoScreen::Next() {
++#if PPSSPP_PLATFORM(PS4)
++	M33_EndIntro();
++#endif
+ 	if (!switched_) {
+ 		switched_ = true;
+ 		Path gamePath = boot_filename;
+@@ -388,7 +394,12 @@ void LogoScreen::Next() {
  	}
  }
  
 +#if PPSSPP_PLATFORM(PS4)
-+const float logoScreenSeconds = M33_INTRO_SECONDS;
++// M33: its opening, or its startup clip, which has a length of its own
++#define logoScreenSeconds (M33_IntroSeconds())
 +#else
  const float logoScreenSeconds = 2.5f;
 +#endif
  
  LogoScreen::LogoScreen(AfterLogoScreen afterLogoScreen)
  	: afterLogoScreen_(afterLogoScreen) {
-@@ -431,6 +438,11 @@ void LogoScreen::DrawForeground(UIContext &dc) {
+@@ -431,6 +442,11 @@ void LogoScreen::DrawForeground(UIContext &dc) {
  	using namespace Draw;
  
  	const Bounds &bounds = GetLayoutBounds(dc);
@@ -789,7 +800,7 @@ index 6cd4394..5cb22b8 100644
  
  	dc.Begin();
  
-@@ -555,6 +567,17 @@ void CreditsScreen::CreateDialogViews(UI::ViewGroup *parent) {
+@@ -555,6 +571,17 @@ void CreditsScreen::CreateDialogViews(UI::ViewGroup *parent) {
  	}
  
  	int rightYOffset = 0;
@@ -807,7 +818,7 @@ index 6cd4394..5cb22b8 100644
  	if (!System_GetPropertyBool(SYSPROP_APP_GOLD)) {
  		ScreenManager *sm = screenManager();
  		Choice *gold = new Choice(mm->T("Buy PPSSPP Gold"));
-@@ -742,7 +765,13 @@ void CreditsScroller::Draw(UIContext &dc) {
+@@ -742,7 +769,13 @@ void CreditsScroller::Draw(UIContext &dc) {
  
  	// TODO: This is kinda ugly, done on every frame...
  	char temp[256];
@@ -960,10 +971,10 @@ index 4ce8d5e..ec8faf6 100644
  #define PPSSPP_API_ANY_GL 1
 diff --git a/ps4/PS4Audio.cpp b/ps4/PS4Audio.cpp
 new file mode 100644
-index 0000000..3fa351e
+index 0000000..267cf42
 --- /dev/null
 +++ b/ps4/PS4Audio.cpp
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,133 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -988,7 +999,10 @@ index 0000000..3fa351e
 +#include <orbis/libkernel.h>
 +
 +#include <atomic>
++#include <algorithm>
++#include <mutex>
 +#include <thread>
++#include <vector>
 +
 +#include "Common/Log.h"
 +#include "Common/System/NativeApp.h"
@@ -1009,6 +1023,20 @@ index 0000000..3fa351e
 +std::atomic<bool> g_running{ false };
 +std::thread g_thread;
 +
++std::mutex g_overlayLock;
++std::vector<int16_t> g_overlay;  // interleaved stereo
++size_t g_overlayPos = 0;
++
++void MixOverlay(int16_t *out, int frames) {
++	std::lock_guard<std::mutex> guard(g_overlayLock);
++	if (g_overlayPos >= g_overlay.size())
++		return;
++	const size_t n = std::min(g_overlay.size() - g_overlayPos, (size_t)frames * 2);
++	for (size_t i = 0; i < n; i++)
++		out[i] = (int16_t)std::clamp((int)out[i] + (int)g_overlay[g_overlayPos + i], -32768, 32767);
++	g_overlayPos += n;
++}
++
 +void OutputLoop() {
 +	SetCurrentThreadName("PS4AudioOut");
 +	// A thread inherits its creator's cores: take all of the app's, and a priority above the
@@ -1022,6 +1050,7 @@ index 0000000..3fa351e
 +	while (g_running) {
 +		int16_t *out = grains[current];
 +		NativeMix(out, kGrainFrames, kSampleRate, nullptr);
++		MixOverlay(out, kGrainFrames);
 +		sceAudioOutOutput(g_port, out);
 +		current ^= 1;
 +	}
@@ -1029,6 +1058,19 @@ index 0000000..3fa351e
 +}
 +
 +}  // namespace
++
++void PlayOverlay(std::vector<int16_t> pcm) {
++	std::lock_guard<std::mutex> guard(g_overlayLock);
++	g_overlay = std::move(pcm);
++	g_overlayPos = 0;
++}
++
++void StopOverlay() {
++	std::lock_guard<std::mutex> guard(g_overlayLock);
++	g_overlay.clear();
++	g_overlay.shrink_to_fit();
++	g_overlayPos = 0;
++}
 +
 +bool Start() {
 +	if (g_running)
@@ -1068,10 +1110,10 @@ index 0000000..3fa351e
 +}  // namespace PS4Audio
 diff --git a/ps4/PS4Audio.h b/ps4/PS4Audio.h
 new file mode 100644
-index 0000000..2146535
+index 0000000..381c147
 --- /dev/null
 +++ b/ps4/PS4Audio.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,36 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -1090,6 +1132,9 @@ index 0000000..2146535
 +
 +#pragma once
 +
++#include <cstdint>
++#include <vector>
++
 +namespace PS4Audio {
 +
 +constexpr int kSampleRate = 48000;
@@ -1100,13 +1145,17 @@ index 0000000..2146535
 +bool Start();
 +void Stop();
 +
++// Sound played over the emulator's (the startup clip): 48 kHz interleaved stereo, from now on.
++void PlayOverlay(std::vector<int16_t> pcm);
++void StopOverlay();
++
 +}  // namespace PS4Audio
 diff --git a/ps4/PS4Brand.cpp b/ps4/PS4Brand.cpp
 new file mode 100644
-index 0000000..8ec20d3
+index 0000000..07ac042
 --- /dev/null
 +++ b/ps4/PS4Brand.cpp
-@@ -0,0 +1,269 @@
+@@ -0,0 +1,293 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -1144,6 +1193,7 @@ index 0000000..8ec20d3
 +#include "Common/UI/View.h"
 +#include "Core/Config.h"
 +#include "ps4/PS4Brand.h"
++#include "ps4/PS4StartupClip.h"
 +
 +const std::string &M33_Version() {
 +	static std::string version;
@@ -1255,7 +1305,30 @@ index 0000000..8ec20d3
 +
 +}  // namespace
 +
++float M33_IntroSeconds() {
++	static bool tried = false;
++	if (!tried) {
++		tried = true;
++		for (const char *path : { "/data/March33/startup.mp4", "/app0/assets/startup.mp4" }) {
++			if (FILE *f = fopen(path, "rb")) {
++				fclose(f);
++				if (M33Clip::Open(path))
++					break;
++			}
++		}
++	}
++	return M33Clip::Active() ? M33Clip::Duration() : M33_INTRO_SECONDS;
++}
++
++void M33_EndIntro() {
++	M33Clip::Close();
++}
++
 +void M33_DrawIntro(UIContext &dc, const Bounds &bounds, double time) {
++	if (M33Clip::Active()) {
++		M33Clip::Draw(dc, bounds, time);
++		return;
++	}
 +	const float t = (float)time;
 +	const float W = bounds.w, H = bounds.h;
 +	const float cx = bounds.centerX();
@@ -1378,10 +1451,10 @@ index 0000000..8ec20d3
 +}
 diff --git a/ps4/PS4Brand.h b/ps4/PS4Brand.h
 new file mode 100644
-index 0000000..00ffc9a
+index 0000000..870978a
 --- /dev/null
 +++ b/ps4/PS4Brand.h
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,41 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -1418,6 +1491,11 @@ index 0000000..00ffc9a
 +// The opening animation (LogoScreen), t seconds in; it ends at M33_INTRO_SECONDS.
 +constexpr float M33_INTRO_SECONDS = 4.2f;
 +void M33_DrawIntro(UIContext &dc, const Bounds &bounds, double t);
++// How long the opening runs: the startup clip's length if there is one (ps4/PS4StartupClip.cpp:
++// /data/March33/startup.mp4, else the package's), M33_INTRO_SECONDS for the drawn one.
++float M33_IntroSeconds();
++// The opening is over (or skipped): stops the clip and its sound.
++void M33_EndIntro();
 diff --git a/ps4/PS4Main.cpp b/ps4/PS4Main.cpp
 new file mode 100644
 index 0000000..821d1da
@@ -2102,6 +2180,382 @@ index 0000000..9bce56b
 +void Vibrate(int lengthMs);
 +
 +}  // namespace PS4Pad
+diff --git a/ps4/PS4StartupClip.cpp b/ps4/PS4StartupClip.cpp
+new file mode 100644
+index 0000000..18464dc
+--- /dev/null
++++ b/ps4/PS4StartupClip.cpp
+@@ -0,0 +1,327 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++// M33: the startup clip, with the FFmpeg the emulator links anyway.
++//
++// The sound is decoded whole when the clip opens (seconds of 48 kHz stereo, a few MB) and handed to
++// PS4Audio as an overlay when the picture starts. The picture is decoded by a thread, a few frames
++// ahead, as RGBA; the UI thread uploads the frame for the current time into one of four textures
++// in turn (a texture the GPU may still be reading isn't written) and draws it over black, letterboxed.
++
++#include <algorithm>
++#include <atomic>
++#include <condition_variable>
++#include <cstring>
++#include <deque>
++#include <mutex>
++#include <thread>
++#include <vector>
++
++extern "C" {
++#include <libavcodec/avcodec.h>
++#include <libavformat/avformat.h>
++#include <libavutil/channel_layout.h>
++#include <libavutil/imgutils.h>
++#include <libswresample/swresample.h>
++#include <libswscale/swscale.h>
++}
++
++#include "Common/GPU/thin3d.h"
++#include "Common/Log.h"
++#include "Common/Math/geom2d.h"
++#include "Common/Render/DrawBuffer.h"
++#include "Common/Thread/ThreadUtil.h"
++#include "Common/UI/Context.h"
++#include "ps4/PS4Audio.h"
++#include "ps4/PS4StartupClip.h"
++
++namespace M33Clip {
++
++namespace {
++
++struct Frame {
++	double time;
++	std::vector<uint8_t> rgba;
++};
++
++constexpr int kQueueMax = 6;
++constexpr int kTextures = 4;
++
++std::string g_path;
++bool g_active = false;
++float g_duration = 0.0f;
++int g_width = 0, g_height = 0;
++std::vector<int16_t> g_sound;
++bool g_soundStarted = false;
++
++std::thread g_thread;
++std::atomic<bool> g_stop{ false };
++std::mutex g_lock;
++std::condition_variable g_cv;
++std::deque<Frame> g_queue;
++bool g_decodeDone = false;
++
++Draw::Texture *g_tex[kTextures]{};
++int g_texNext = 0;
++Draw::Texture *g_current = nullptr;
++double g_currentTime = -1.0;
++
++// All of the clip's sound as 48 kHz interleaved stereo.
++bool DecodeSound(const std::string &path, std::vector<int16_t> *out) {
++	AVFormatContext *fmt = nullptr;
++	if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0)
++		return false;
++	bool ok = false;
++	AVCodecContext *ctx = nullptr;
++	SwrContext *swr = nullptr;
++	AVPacket *pkt = av_packet_alloc();
++	AVFrame *frame = av_frame_alloc();
++	do {
++		if (avformat_find_stream_info(fmt, nullptr) < 0)
++			break;
++		const int si = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
++		if (si < 0)
++			break;
++		const AVCodec *codec = avcodec_find_decoder(fmt->streams[si]->codecpar->codec_id);
++		if (!codec)
++			break;
++		ctx = avcodec_alloc_context3(codec);
++		avcodec_parameters_to_context(ctx, fmt->streams[si]->codecpar);
++		if (avcodec_open2(ctx, codec, nullptr) < 0)
++			break;
++		AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
++		if (swr_alloc_set_opts2(&swr, &stereo, AV_SAMPLE_FMT_S16, 48000, &ctx->ch_layout, ctx->sample_fmt, ctx->sample_rate, 0, nullptr) < 0 || swr_init(swr) < 0)
++			break;
++		auto convert = [&](AVFrame *f) {
++			const int maxOut = (int)av_rescale_rnd(swr_get_delay(swr, ctx->sample_rate) + (f ? f->nb_samples : 0), 48000, ctx->sample_rate, AV_ROUND_UP);
++			if (maxOut <= 0)
++				return;
++			const size_t base = out->size();
++			out->resize(base + (size_t)maxOut * 2);
++			uint8_t *dst = (uint8_t *)(out->data() + base);
++			const int n = swr_convert(swr, &dst, maxOut, f ? (const uint8_t **)f->extended_data : nullptr, f ? f->nb_samples : 0);
++			out->resize(base + (size_t)std::max(0, n) * 2);
++		};
++		while (av_read_frame(fmt, pkt) >= 0) {
++			if (pkt->stream_index == si && avcodec_send_packet(ctx, pkt) >= 0) {
++				while (avcodec_receive_frame(ctx, frame) >= 0)
++					convert(frame);
++			}
++			av_packet_unref(pkt);
++		}
++		avcodec_send_packet(ctx, nullptr);
++		while (avcodec_receive_frame(ctx, frame) >= 0)
++			convert(frame);
++		convert(nullptr);
++		ok = !out->empty();
++	} while (false);
++	av_frame_free(&frame);
++	av_packet_free(&pkt);
++	swr_free(&swr);
++	avcodec_free_context(&ctx);
++	avformat_close_input(&fmt);
++	return ok;
++}
++
++// The picture, a few frames ahead of the screen.
++void DecodePicture(std::string path) {
++	SetCurrentThreadName("M33Clip");
++	AVFormatContext *fmt = nullptr;
++	AVCodecContext *ctx = nullptr;
++	SwsContext *sws = nullptr;
++	AVPacket *pkt = av_packet_alloc();
++	AVFrame *frame = av_frame_alloc();
++	int si = -1;
++	if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) >= 0 && avformat_find_stream_info(fmt, nullptr) >= 0 &&
++		(si = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0)) >= 0) {
++		const AVStream *st = fmt->streams[si];
++		const AVCodec *codec = avcodec_find_decoder(st->codecpar->codec_id);
++		if (codec) {
++			ctx = avcodec_alloc_context3(codec);
++			avcodec_parameters_to_context(ctx, st->codecpar);
++			ctx->thread_count = 3;
++			if (avcodec_open2(ctx, codec, nullptr) < 0)
++				avcodec_free_context(&ctx);
++		}
++	}
++	auto emit = [&](AVFrame *f) {
++		if (!sws)
++			sws = sws_getContext(f->width, f->height, (AVPixelFormat)f->format, g_width, g_height, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
++		Frame out;
++		const AVRational tb = fmt->streams[si]->time_base;
++		const int64_t pts = f->best_effort_timestamp != AV_NOPTS_VALUE ? f->best_effort_timestamp : 0;
++		out.time = pts * av_q2d(tb);
++		out.rgba.resize((size_t)g_width * g_height * 4);
++		uint8_t *dst[1] = { out.rgba.data() };
++		int stride[1] = { g_width * 4 };
++		sws_scale(sws, f->data, f->linesize, 0, f->height, dst, stride);
++		std::unique_lock<std::mutex> lock(g_lock);
++		g_cv.wait(lock, [] { return g_stop || (int)g_queue.size() < kQueueMax; });
++		if (!g_stop)
++			g_queue.push_back(std::move(out));
++	};
++	if (ctx) {
++		while (!g_stop && av_read_frame(fmt, pkt) >= 0) {
++			if (pkt->stream_index == si && avcodec_send_packet(ctx, pkt) >= 0) {
++				while (!g_stop && avcodec_receive_frame(ctx, frame) >= 0)
++					emit(frame);
++			}
++			av_packet_unref(pkt);
++		}
++		avcodec_send_packet(ctx, nullptr);
++		while (!g_stop && avcodec_receive_frame(ctx, frame) >= 0)
++			emit(frame);
++	}
++	sws_freeContext(sws);
++	av_frame_free(&frame);
++	av_packet_free(&pkt);
++	avcodec_free_context(&ctx);
++	avformat_close_input(&fmt);
++	std::lock_guard<std::mutex> guard(g_lock);
++	g_decodeDone = true;
++	g_cv.notify_all();
++}
++
++}  // namespace
++
++bool Open(const std::string &path) {
++	Close();
++	AVFormatContext *fmt = nullptr;
++	if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0)
++		return false;
++	bool ok = false;
++	if (avformat_find_stream_info(fmt, nullptr) >= 0) {
++		const int vi = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
++		if (vi >= 0) {
++			const AVCodecParameters *par = fmt->streams[vi]->codecpar;
++			// at most 1080p (the screen)
++			const float scale = std::min(1.0f, std::min(1920.0f / par->width, 1080.0f / par->height));
++			g_width = std::max(2, (int)(par->width * scale)) & ~1;
++			g_height = std::max(2, (int)(par->height * scale)) & ~1;
++			g_duration = fmt->duration > 0 ? (float)(fmt->duration / (double)AV_TIME_BASE) : 0.0f;
++			ok = g_duration > 0.1f;
++		}
++	}
++	avformat_close_input(&fmt);
++	if (!ok) {
++		WARN_LOG(Log::System, "M33Clip: %s isn't a playable clip", path.c_str());
++		return false;
++	}
++	g_sound.clear();
++	if (!DecodeSound(path, &g_sound))
++		WARN_LOG(Log::System, "M33Clip: no sound in %s", path.c_str());
++	g_path = path;
++	g_stop = false;
++	g_decodeDone = false;
++	g_queue.clear();
++	g_soundStarted = false;
++	g_current = nullptr;
++	g_currentTime = -1.0;
++	g_thread = std::thread(DecodePicture, path);
++	g_active = true;
++	INFO_LOG(Log::System, "M33Clip: %s, %dx%d, %.2f s, %zu sound frames", path.c_str(), g_width, g_height, g_duration, g_sound.size() / 2);
++	return true;
++}
++
++bool Active() {
++	return g_active;
++}
++
++float Duration() {
++	return g_duration;
++}
++
++void Draw(UIContext &dc, const Bounds &bounds, double t) {
++	if (!g_active)
++		return;
++	if (!g_soundStarted) {
++		g_soundStarted = true;
++		if (!g_sound.empty())
++			PS4Audio::PlayOverlay(std::move(g_sound));
++		g_sound.clear();
++	}
++	Draw::DrawContext *draw = dc.GetDrawContext();
++	if (!g_tex[0]) {
++		std::vector<uint8_t> black((size_t)g_width * g_height * 4, 0);
++		for (int i = 0; i < kTextures; i++) {
++			Draw::TextureDesc desc{};
++			desc.type = Draw::TextureType::LINEAR2D;
++			desc.format = Draw::DataFormat::R8G8B8A8_UNORM;
++			desc.width = g_width;
++			desc.height = g_height;
++			desc.depth = 1;
++			desc.mipLevels = 1;
++			desc.tag = "M33Clip";
++			desc.initData.push_back(black.data());
++			g_tex[i] = draw->CreateTexture(desc);
++		}
++	}
++	// The newest decoded frame that is due; older due ones are dropped.
++	Frame due;
++	bool have = false;
++	{
++		std::lock_guard<std::mutex> guard(g_lock);
++		while (!g_queue.empty() && g_queue.front().time <= t) {
++			due = std::move(g_queue.front());
++			g_queue.pop_front();
++			have = true;
++		}
++		g_cv.notify_all();
++	}
++	if (have && g_tex[g_texNext]) {
++		const uint8_t *levels[1] = { due.rgba.data() };
++		draw->UpdateTextureLevels(g_tex[g_texNext], levels, Draw::TextureCallback(), 1);
++		g_current = g_tex[g_texNext];
++		g_currentTime = due.time;
++		g_texNext = (g_texNext + 1) % kTextures;
++	}
++
++	dc.Begin();
++	dc.Draw()->Rect(bounds.x, bounds.y, bounds.w, bounds.h, 0xFF000000);
++	dc.Flush();
++	if (g_current) {
++		// letterboxed into the screen
++		const float s = std::min(bounds.w / g_width, bounds.h / g_height);
++		const float w = g_width * s, h = g_height * s;
++		const Bounds pic(bounds.centerX() - w / 2, bounds.centerY() - h / 2, w, h);
++		draw->BindTexture(0, g_current);
++		dc.Draw()->DrawTexRect(pic, 0, 0, 1, 1, 0xFFFFFFFF);
++		dc.Flush();
++		dc.RebindTexture();
++	}
++}
++
++void Close() {
++	if (g_thread.joinable()) {
++		{
++			std::lock_guard<std::mutex> guard(g_lock);
++			g_stop = true;
++		}
++		g_cv.notify_all();
++		g_thread.join();
++	}
++	if (g_active)
++		PS4Audio::StopOverlay();
++	for (Draw::Texture *&tex : g_tex) {
++		if (tex)
++			tex->Release();
++		tex = nullptr;
++	}
++	g_current = nullptr;
++	g_queue.clear();
++	g_sound.clear();
++	g_active = false;
++}
++
++}  // namespace M33Clip
+diff --git a/ps4/PS4StartupClip.h b/ps4/PS4StartupClip.h
+new file mode 100644
+index 0000000..e210cdf
+--- /dev/null
++++ b/ps4/PS4StartupClip.h
+@@ -0,0 +1,37 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++// M33: the startup clip (/data/March33/startup.mp4 if the user put one there, else the package's
++// /app0/assets/startup.mp4), played instead of the drawn opening when there is one.
++
++#pragma once
++
++#include <string>
++
++class UIContext;
++struct Bounds;
++
++namespace M33Clip {
++
++// Opens the clip and decodes its sound; false if there's none (or it can't be played).
++bool Open(const std::string &path);
++bool Active();
++// Its length in seconds.
++float Duration();
++// Draws the picture for t seconds in (the sound starts with the first call).
++void Draw(UIContext &dc, const Bounds &bounds, double t);
++// Stops picture and sound, frees everything.
++void Close();
++
++}  // namespace M33Clip
 diff --git a/ps4/PS4Stubs.c b/ps4/PS4Stubs.c
 new file mode 100644
 index 0000000..1c86573
@@ -2759,10 +3213,10 @@ index 0000000..1a3454c
 +PFN_vkGetInstanceProcAddr ps4_vk_get_instance_proc_addr();
 diff --git a/ps4/ps4.cmake b/ps4/ps4.cmake
 new file mode 100644
-index 0000000..d8dbb33
+index 0000000..8bea79d
 --- /dev/null
 +++ b/ps4/ps4.cmake
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,30 @@
 +# M33: PPSSPP's PS4 frontend, included from the top CMakeLists.txt once ${TargetBin} exists.
 +# Built with M33's toolchain (toolchain/ps4-m33.cmake, and ps4-love-style.cmake as the project
 +# include: PS4_RUNTIME_SOURCES, ps4_link_mesa, ps4_add_eboot).
@@ -2775,6 +3229,8 @@ index 0000000..d8dbb33
 +	ps4/PS4Brand.h
 +	ps4/PS4Pad.cpp
 +	ps4/PS4Pad.h
++	ps4/PS4StartupClip.cpp
++	ps4/PS4StartupClip.h
 +	ps4/PS4Stubs.c
 +	ps4/PS4VulkanWSI.cpp
 +	ps4/PS4VulkanWSI.h

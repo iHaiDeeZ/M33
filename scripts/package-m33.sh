@@ -28,6 +28,14 @@ tar -C "$SRC/assets" --exclude=debugger --exclude=upload --exclude=.git -cf - . 
 # images in the UI atlas and its name in the texts (scripts/brand-stage.py; brand/ from make-brand.py)
 cp -r "$HERE/../assets/." "$STAGE/assets/"
 python3 "$HERE/brand-stage.py" "$STAGE/assets" "$HERE/.."
+# The startup clip (scripts/blender/startup_anim.py + encode.py), played instead of the drawn opening.
+# It carries the user's own PSP startup video (Sony's): bundled in the package on purpose, kept out of
+# git (.gitignore: brand/startup/). M33_STARTUP_CLIP= (empty) packages without it.
+CLIP="${M33_STARTUP_CLIP-$HERE/../brand/startup/m33-startup-preview.mp4}"
+if [ -n "$CLIP" ] && [ -f "$CLIP" ]; then
+    cp "$CLIP" "$STAGE/assets/startup.mp4"
+    echo "startup clip: $(basename "$CLIP") ($(stat -c %s "$CLIP") bytes)"
+fi
 # PkgTool's pkg_build crashes ("Sequence contains no elements") on empty folders.
 find "$STAGE" -type d -empty -delete
 # Vulkan (RADV on GNM) runs under the plain homebrew identity (4.5 GiB of direct memory).

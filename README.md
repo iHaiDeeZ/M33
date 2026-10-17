@@ -95,6 +95,12 @@ it in the game browser. It is installed to `/data/March33/PSP/NAND`.
   (`assets/ui_images/icon.png`): a PSP-1000-style handheld modelled and rendered in Blender 4.5
   (`scripts/blender/psp_scene.py`, no Sony assets or logos), composed by `scripts/make-icon.py`.
   Re-render: `~/tools/blender-4.5.14-linux-x64/blender -b -P scripts/blender/psp_scene.py -- <out> brand/intro-still.png art/Michroma-Regular.ttf 256 1024 macro_cut macro_wide`
+- The startup clip: the handheld spins in, powers on and plays a startup video on its screen
+  (`scripts/blender/startup_anim.py`, then `encode.py` adds the video's sound; 8 s, 60 fps).
+  `package-m33.sh` bundles `brand/startup/m33-startup-preview.mp4` as `assets/startup.mp4`; the
+  app plays it (`ps4/PS4StartupClip.cpp`, FFmpeg) instead of the drawn opening, any button skips
+  it, and a `/data/March33/startup.mp4` on the console takes its place. It contains the PSP's
+  startup video, so it stays out of git (`brand/startup/` is ignored).
 - In the app: the opening animation (`ps4/PS4Brand.cpp`), the M33 logo and intro lettering as
   vectors in the UI atlas (`scripts/make-brand.py` -> `brand/m33-ui.svg`, merged by
   `scripts/brand-stage.py` when packaging), the March33 theme (`assets/themes/march33.ini`), the
