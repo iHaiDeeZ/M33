@@ -1,8 +1,8 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 1e9b13e..9281f21 100644
+index 1e9b13e..f5c645f 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -109,6 +109,22 @@ if(ANDROID OR WIN32 OR (UNIX AND NOT ARM_NO_VULKAN))
+@@ -109,6 +109,24 @@ if(ANDROID OR WIN32 OR (UNIX AND NOT ARM_NO_VULKAN))
  	set(VULKAN ON)
  endif()
  
@@ -21,11 +21,23 @@ index 1e9b13e..9281f21 100644
 +	set(ATLAS_TOOL OFF CACHE BOOL "" FORCE)
 +	# armips' ghc::filesystem finds the OS from BSD in <sys/param.h>, which the musl-based libc lacks
 +	add_compile_definitions(GHC_OS_DETECTED GHC_OS_BSD)
++	# libkirk's AES (PSP crypto) has OpenSSL's function names, and OpenSSL is linked in for HTTPS
++	add_compile_definitions(AES_encrypt=kirk_AES_encrypt AES_decrypt=kirk_AES_decrypt AES_cbc_encrypt=kirk_AES_cbc_encrypt)
 +endif()
  
  if(CMAKE_CXX_COMPILER MATCHES "webos" OR
     CMAKE_CXX_COMPILER MATCHES "starfish")
-@@ -339,7 +355,7 @@ set(SDL_LIB_TARGET "")
+@@ -278,6 +296,9 @@ endif()
+ # APIs on Android, NSURLSession on macOS, and libcurl elsewhere.
+ if(WIN32 OR ANDROID OR (APPLE AND NOT IOS))
+ 	# Nothing to do, these need no external library.
++elseif(PS4)
++	# M33: libcurl and OpenSSL from the sysroot, linked in (ext/naett-build, ps4/ps4.cmake).
++	set(CURL_INCLUDE_DIRS ${PS4_SYSROOT}/include)
+ elseif(UNIX AND NOT APPLE AND NOT LIBRETRO)
+ 	# We only need the curl headers at build time - libcurl itself is loaded with dlopen
+ 	# (see ext/naett-lib/src/naett_curl.h), so it stays optional at runtime and a build made
+@@ -339,7 +360,7 @@ set(SDL_LIB_TARGET "")
  set(SDL_TTF_LIB_TARGET "")
  set(FONTCONFIG_LIB_TARGET "")
  
@@ -34,7 +46,7 @@ index 1e9b13e..9281f21 100644
  	find_package(SDL3 QUIET)
  	if(NOT SDL3_FOUND)
  		if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND (EXISTS "/usr/bin/apt" OR EXISTS "/usr/bin/apt-get" OR EXISTS "/etc/debian_version"))
-@@ -1022,6 +1038,9 @@ elseif(WIN32)
+@@ -1022,6 +1043,9 @@ elseif(WIN32)
  	# Don't care about SDL.
  	set(TargetBin PPSSPPWindows)
  elseif(LIBRETRO)
@@ -44,7 +56,7 @@ index 1e9b13e..9281f21 100644
  elseif(HEADLESS_CROSS)
  	# The loongarch64/riscv64 cross builds only build PPSSPPHeadless, and there's no
  	# SDL3 available in those sysroots, so skip the desktop SDL frontend entirely.
-@@ -1557,6 +1576,9 @@ if(TargetBin)
+@@ -1557,6 +1581,9 @@ if(TargetBin)
  	else()
  		target_link_libraries(${TargetBin} ${CMAKE_THREAD_LIBS_INIT} ${targetExtraLibs} Core)
  	endif()
@@ -436,6 +448,28 @@ index 335a280..332a7e8 100644
  	static char *map_hint = nullptr;
  
  #if PPSSPP_ARCH(AMD64)
+diff --git a/Common/Net/Resolve.cpp b/Common/Net/Resolve.cpp
+index 60321e2..99405a8 100644
+--- a/Common/Net/Resolve.cpp
++++ b/Common/Net/Resolve.cpp
+@@ -18,7 +18,7 @@
+ #include "Common/Net/HTTPNaettRequest.h"
+ #include "ext/naett-lib/naett.h"
+ // Note: PPSSPP_PLATFORM(LINUX) is also set on Android, which needs no loader.
+-#if PPSSPP_PLATFORM(LINUX) && !PPSSPP_PLATFORM(ANDROID)
++#if (PPSSPP_PLATFORM(LINUX) && !PPSSPP_PLATFORM(ANDROID)) || PPSSPP_PLATFORM(PS4)
+ // On Linux, naett goes through libcurl, which we load at runtime - so HTTPS support is
+ // only known once we've tried.
+ #include "ext/naett-lib/src/naett_curl.h"
+@@ -61,7 +61,7 @@ void Init() {
+ bool HTTPSAvailable() {
+ #ifdef HTTPS_NOT_AVAILABLE
+ 	return false;
+-#elif PPSSPP_PLATFORM(LINUX) && !PPSSPP_PLATFORM(ANDROID)
++#elif (PPSSPP_PLATFORM(LINUX) && !PPSSPP_PLATFORM(ANDROID)) || PPSSPP_PLATFORM(PS4)
+ 	return naettCurlLoad() != 0;
+ #else
+ 	return true;
 diff --git a/Common/Thread/ThreadUtil.cpp b/Common/Thread/ThreadUtil.cpp
 index e842a03..2f182b8 100644
 --- a/Common/Thread/ThreadUtil.cpp
@@ -899,6 +933,40 @@ index 806051b..30b18f8 100644
  
  	if (cmdLineOptions.appendConfig.has_value()) {
  		g_Config.SetAppendedConfigIni(Path(cmdLineOptions.appendConfig.value()));
+diff --git a/UI/RetroAchievementScreens.cpp b/UI/RetroAchievementScreens.cpp
+index 35b7aa5..d08fdd0 100644
+--- a/UI/RetroAchievementScreens.cpp
++++ b/UI/RetroAchievementScreens.cpp
+@@ -431,9 +431,12 @@ void RetroAchievementsSettingsScreen::CreateAccountTab(UI::ViewGroup *viewGroup)
+ 				return !g_Config.sAchievementsUserName.empty() && !password_.empty();
+ 			});
+ 		}
++#if !PPSSPP_PLATFORM(PS4)
++		// (M33: no web browser on the PS4 to register in)
+ 		viewGroup->Add(new Choice(ac->T("Register on www.retroachievements.org")))->OnClick.Add([](UI::EventParams &) -> void {
+ 			System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://retroachievements.org/createaccount.php");
+ 		});
++#endif
+ 	}
+ 
+ 	using namespace UI;
+@@ -445,6 +448,8 @@ void RetroAchievementsSettingsScreen::CreateAccountTab(UI::ViewGroup *viewGroup)
+ 	viewGroup->Add(new CheckBox(&g_Config.bAchievementsHardcoreMode, ac->T("Hardcore Mode (no savestates)")))->SetEnabledPtr(&g_Config.bAchievementsEnable);
+ 	viewGroup->Add(new CheckBox(&g_Config.bAchievementsSoundEffects, ac->T("Sound Effects")))->SetEnabledPtr(&g_Config.bAchievementsEnable);
+ 
++#if !PPSSPP_PLATFORM(PS4)
++	// (M33: the links would need a web browser)
+ 	viewGroup->Add(new ItemHeader(di->T("Links")));
+ 	viewGroup->Add(new Choice(ac->T("RetroAchievements website"), ImageID("I_LINK_OUT")))->OnClick.Add([](UI::EventParams &) -> void {
+ 		System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.retroachievements.org/");
+@@ -452,6 +457,7 @@ void RetroAchievementsSettingsScreen::CreateAccountTab(UI::ViewGroup *viewGroup)
+ 	viewGroup->Add(new Choice(ac->T("How to use RetroAchievements"), ImageID("I_LINK_OUT")))->OnClick.Add([](UI::EventParams &) -> void {
+ 		System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/docs/reference/retro-achievements");
+ 	});
++#endif
+ }
+ 
+ void RetroAchievementsSettingsScreen::CreateCustomizeTab(UI::ViewGroup *viewGroup) {
 diff --git a/UI/UIAtlas.cpp b/UI/UIAtlas.cpp
 index 3430114..5b1349b 100644
 --- a/UI/UIAtlas.cpp
@@ -946,6 +1014,127 @@ index b8607ef..6e6973e 100644
  	list(APPEND aemu_postoffice_client_obj
  		aemu_postoffice/client/sock_impl_linux.c
  	)
+diff --git a/ext/naett-build/CMakeLists.txt b/ext/naett-build/CMakeLists.txt
+index 526dd51..f3f9533 100644
+--- a/ext/naett-build/CMakeLists.txt
++++ b/ext/naett-build/CMakeLists.txt
+@@ -13,13 +13,17 @@ elseif(ANDROID)
+ 	list(APPEND ALL_SOURCE_FILES ${SRC_DIR}/naett_android.c)
+ elseif(APPLE)
+ 	list(APPEND ALL_SOURCE_FILES ${SRC_DIR}/naett_osx.c)
+-elseif(UNIX)
++elseif(UNIX OR PS4)
+ 	list(APPEND ALL_SOURCE_FILES ${SRC_DIR}/naett_linux.c ${SRC_DIR}/naett_curl.c)
+ endif()
+ 
+ add_library(naett STATIC ${ALL_SOURCE_FILES})
+ if(WIN32)
+ 	target_link_libraries(naett winhttp)
++elseif(PS4)
++	# M33: curl is linked statically (ps4/ps4.cmake), not dlopen'd.
++	target_include_directories(naett PRIVATE ${CURL_INCLUDE_DIRS})
++	target_compile_definitions(naett PRIVATE CURL_STATICLIB)
+ elseif(UNIX AND NOT APPLE AND NOT ANDROID)
+ 	# Headers only - libcurl itself is dlopen'd, see ../naett/src/naett_curl.h.
+ 	target_include_directories(naett PRIVATE ${CURL_INCLUDE_DIRS})
+diff --git a/ext/naett-lib/src/naett_curl.c b/ext/naett-lib/src/naett_curl.c
+index 53e8b62..a57ba85 100644
+--- a/ext/naett-lib/src/naett_curl.c
++++ b/ext/naett-lib/src/naett_curl.c
+@@ -5,7 +5,9 @@
+ #define NAETT_CURL_INTERNAL
+ #include "naett_curl.h"
+ 
++#ifndef __ORBIS__
+ #include <dlfcn.h>
++#endif
+ #include <stdio.h>
+ 
+ NaettCurl g_curl;
+@@ -13,13 +15,16 @@ NaettCurl g_curl;
+ // libcurl's SONAME has been libcurl.so.4 since 2007. The gnutls and nss flavors are
+ // separate sonames on Debian-likes and old Fedora respectively, and are ABI compatible.
+ // libcurl.so last, since that one only exists if the -dev package is installed.
++#ifndef __ORBIS__
+ static const char *g_curlLibNames[] = {
+ 	"libcurl.so.4",
+ 	"libcurl-gnutls.so.4",
+ 	"libcurl-nss.so.4",
+ 	"libcurl.so",
+ };
++#endif
+ 
++#ifndef __ORBIS__
+ static int LoadSymbols(void *lib) {
+ 	// Every one of these has existed since libcurl 7.28 (2012), so a partial load means
+ 	// something is badly wrong rather than "the host libcurl is a bit old" - bail out
+@@ -49,7 +54,44 @@ static int LoadSymbols(void *lib) {
+ #undef LOAD
+ 	return 1;
+ }
++#endif
++
++#ifdef __ORBIS__
++// M33 (PS4): no shared libraries - libcurl is linked in. The names below are the real curl
++// functions (the redirect macros in naett_curl.h would turn the plain names into g_curl.*).
++extern CURLcode m33_curl_global_init(long) __asm__("curl_global_init");
++extern CURL *m33_curl_easy_init(void) __asm__("curl_easy_init");
++extern CURLcode m33_curl_easy_setopt(CURL *, CURLoption, ...) __asm__("curl_easy_setopt");
++extern CURLcode m33_curl_easy_getinfo(CURL *, CURLINFO, ...) __asm__("curl_easy_getinfo");
++extern void m33_curl_easy_cleanup(CURL *) __asm__("curl_easy_cleanup");
++extern CURLM *m33_curl_multi_init(void) __asm__("curl_multi_init");
++extern CURLMcode m33_curl_multi_cleanup(CURLM *) __asm__("curl_multi_cleanup");
++extern CURLMcode m33_curl_multi_add_handle(CURLM *, CURL *) __asm__("curl_multi_add_handle");
++extern CURLMcode m33_curl_multi_remove_handle(CURLM *, CURL *) __asm__("curl_multi_remove_handle");
++extern CURLMcode m33_curl_multi_perform(CURLM *, int *) __asm__("curl_multi_perform");
++extern CURLMsg *m33_curl_multi_info_read(CURLM *, int *) __asm__("curl_multi_info_read");
++extern CURLMcode m33_curl_multi_wait(CURLM *, struct curl_waitfd[], unsigned int, int, int *) __asm__("curl_multi_wait");
++extern struct curl_slist *m33_curl_slist_append(struct curl_slist *, const char *) __asm__("curl_slist_append");
++extern void m33_curl_slist_free_all(struct curl_slist *) __asm__("curl_slist_free_all");
+ 
++int naettCurlLoad(void) {
++	g_curl.global_init = m33_curl_global_init;
++	g_curl.easy_init = m33_curl_easy_init;
++	g_curl.easy_setopt = m33_curl_easy_setopt;
++	g_curl.easy_getinfo = m33_curl_easy_getinfo;
++	g_curl.easy_cleanup = m33_curl_easy_cleanup;
++	g_curl.multi_init = m33_curl_multi_init;
++	g_curl.multi_cleanup = m33_curl_multi_cleanup;
++	g_curl.multi_add_handle = m33_curl_multi_add_handle;
++	g_curl.multi_remove_handle = m33_curl_multi_remove_handle;
++	g_curl.multi_perform = m33_curl_multi_perform;
++	g_curl.multi_info_read = m33_curl_multi_info_read;
++	g_curl.multi_wait = m33_curl_multi_wait;
++	g_curl.slist_append = m33_curl_slist_append;
++	g_curl.slist_free_all = m33_curl_slist_free_all;
++	return 1;
++}
++#else
+ int naettCurlLoad(void) {
+ 	static int loaded = -1;
+ 	if (loaded >= 0) {
+@@ -76,5 +118,6 @@ int naettCurlLoad(void) {
+ 	}
+ 	return loaded;
+ }
++#endif  // __ORBIS__
+ 
+ #endif
+diff --git a/ext/naett-lib/src/naett_linux.c b/ext/naett-lib/src/naett_linux.c
+index b1fc783..7fbf6ba 100644
+--- a/ext/naett-lib/src/naett_linux.c
++++ b/ext/naett-lib/src/naett_linux.c
+@@ -248,6 +248,10 @@ void naettPlatformMakeRequest(InternalResponse* res) {
+         return;
+     }
+     curl_easy_setopt(c, CURLOPT_URL, req->url);
++#ifdef __ORBIS__
++    // M33: the PS4 has no CA store curl can find; the package carries Mozilla's bundle.
++    curl_easy_setopt(c, CURLOPT_CAINFO, "/app0/assets/cacert.pem");
++#endif
+     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT_MS, (long)req->options.timeoutMS);
+ 
+     curl_easy_setopt(c, CURLOPT_READFUNCTION, readCallback);
 diff --git a/ppsspp_config.h b/ppsspp_config.h
 index 4ce8d5e..ec8faf6 100644
 --- a/ppsspp_config.h
@@ -1496,12 +1685,225 @@ index 0000000..870978a
 +float M33_IntroSeconds();
 +// The opening is over (or skipped): stops the clip and its sound.
 +void M33_EndIntro();
+diff --git a/ps4/PS4Keyboard.cpp b/ps4/PS4Keyboard.cpp
+new file mode 100644
+index 0000000..98ef5c0
+--- /dev/null
++++ b/ps4/PS4Keyboard.cpp
+@@ -0,0 +1,171 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++// M33: the PS4's own keyboard (the IME dialog), as Resonance's launcher (from Crema's) opens it.
++// It confirms with Cross: the package's param.sfo has ATTRIBUTE 0x2 (scripts/make-pkg.sh), without
++// which system dialogs follow the console's region (Circle on some).
++
++#include <cstddef>
++#include <cstdint>
++#include <orbis/CommonDialog.h>
++#include <orbis/ImeDialog.h>
++#include <orbis/Sysmodule.h>
++#include <orbis/UserService.h>
++
++#include <cstdio>
++#include <mutex>
++#include <string>
++
++#include "Common/Log.h"
++#include "Common/System/Request.h"
++#include "ps4/PS4Keyboard.h"
++
++extern "C" void ps4_boot_trace(const char *line);  // port/ps4_crashlog.cpp
++
++namespace PS4Keyboard {
++
++namespace {
++
++constexpr uint32_t OPTION_NO_AUTO_CAPITALIZATION = 0x2;
++constexpr uint32_t OPTION_PASSWORD = 0x4;  // typed characters shown as dots
++
++std::mutex g_lock;
++bool g_open = false;
++int g_requestId = -1;
++char16_t g_text[1024];
++char16_t g_title[128];
++
++void ToUtf16(const std::string &in, char16_t *out, size_t size) {
++	size_t n = 0;
++	for (size_t i = 0; i < in.size() && n + 2 < size;) {
++		const unsigned char c = in[i];
++		char32_t cp;
++		int len;
++		if (c < 0x80) { cp = c; len = 1; }
++		else if ((c >> 5) == 6) { cp = c & 0x1F; len = 2; }
++		else if ((c >> 4) == 14) { cp = c & 0x0F; len = 3; }
++		else { cp = c & 0x07; len = 4; }
++		for (int k = 1; k < len && i + k < in.size(); k++)
++			cp = (cp << 6) | (in[i + k] & 0x3F);
++		i += len;
++		if (cp >= 0x10000) {
++			cp -= 0x10000;
++			out[n++] = (char16_t)(0xD800 + (cp >> 10));
++			out[n++] = (char16_t)(0xDC00 + (cp & 0x3FF));
++		} else {
++			out[n++] = (char16_t)cp;
++		}
++	}
++	out[n] = 0;
++}
++
++std::string ToUtf8(const char16_t *in) {
++	std::string out;
++	for (size_t i = 0; in[i] != 0; i++) {
++		char32_t cp = in[i];
++		if (cp >= 0xD800 && cp < 0xDC00 && in[i + 1] >= 0xDC00 && in[i + 1] < 0xE000) {
++			cp = 0x10000 + ((cp - 0xD800) << 10) + (in[i + 1] - 0xDC00);
++			i++;
++		}
++		if (cp < 0x80) {
++			out += (char)cp;
++		} else if (cp < 0x800) {
++			out += (char)(0xC0 | (cp >> 6));
++			out += (char)(0x80 | (cp & 0x3F));
++		} else if (cp < 0x10000) {
++			out += (char)(0xE0 | (cp >> 12));
++			out += (char)(0x80 | ((cp >> 6) & 0x3F));
++			out += (char)(0x80 | (cp & 0x3F));
++		} else {
++			out += (char)(0xF0 | (cp >> 18));
++			out += (char)(0x80 | ((cp >> 12) & 0x3F));
++			out += (char)(0x80 | ((cp >> 6) & 0x3F));
++			out += (char)(0x80 | (cp & 0x3F));
++		}
++	}
++	return out;
++}
++
++}  // namespace
++
++bool Open(int requestId, const std::string &title, const std::string &text, bool password) {
++	std::lock_guard<std::mutex> guard(g_lock);
++	if (g_open)
++		return false;
++	static bool loaded = false;
++	if (!loaded) {
++		sceSysmoduleLoadModule(ORBIS_SYSMODULE_IME_DIALOG);
++		sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_COMMON_DIALOG);
++		sceCommonDialogInitialize();
++		loaded = true;
++	}
++	ToUtf16(text, g_text, sizeof(g_text) / sizeof(g_text[0]));
++	ToUtf16(title, g_title, sizeof(g_title) / sizeof(g_title[0]));
++	int32_t user = -1;
++	sceUserServiceGetInitialUser(&user);
++	OrbisImeDialogSetting setting{};
++	setting.userId = (uint32_t)user;
++	setting.type = ORBIS_TYPE_DEFAULT;
++	setting.enterLabel = ORBIS_BUTTON_LABEL_DEFAULT;
++	setting.option = OPTION_NO_AUTO_CAPITALIZATION | (password ? OPTION_PASSWORD : 0);
++	setting.maxTextLength = (uint32_t)(sizeof(g_text) / sizeof(g_text[0])) - 2;
++	setting.inputTextBuffer = reinterpret_cast<wchar_t *>(g_text);
++	setting.posx = 1920.f / 2;
++	setting.posy = 1080.f / 2;
++	setting.horizontalAlignment = ORBIS_H_CENTER;
++	setting.verticalAlignment = ORBIS_V_CENTER;
++	setting.title = reinterpret_cast<const wchar_t *>(g_title);
++	const int r = sceImeDialogInit(&setting, nullptr);
++	char line[96];
++	snprintf(line, sizeof(line), "keyboard: open %x", (unsigned)r);
++	ps4_boot_trace(line);
++	g_open = r >= 0;
++	g_requestId = g_open ? requestId : -1;
++	return g_open;
++}
++
++bool IsOpen() {
++	std::lock_guard<std::mutex> guard(g_lock);
++	return g_open;
++}
++
++void Update() {
++	int requestId;
++	bool ok;
++	std::string text;
++	{
++		std::lock_guard<std::mutex> guard(g_lock);
++		if (!g_open)
++			return;
++		const OrbisDialogStatus status = sceImeDialogGetStatus();
++		if (status == ORBIS_DIALOG_STATUS_RUNNING)
++			return;
++		OrbisDialogResult result{};
++		if (status == ORBIS_DIALOG_STATUS_STOPPED)
++			sceImeDialogGetResult(&result);
++		sceImeDialogTerm();
++		g_open = false;
++		ok = status == ORBIS_DIALOG_STATUS_STOPPED && result.endstatus == ORBIS_DIALOG_OK;
++		requestId = g_requestId;
++		g_requestId = -1;
++		if (ok)
++			text = ToUtf8(g_text);
++	}
++	if (ok)
++		g_requestManager.PostSystemSuccess(requestId, text);
++	else
++		g_requestManager.PostSystemFailure(requestId);
++}
++
++}  // namespace PS4Keyboard
+diff --git a/ps4/PS4Keyboard.h b/ps4/PS4Keyboard.h
+new file mode 100644
+index 0000000..4cd600c
+--- /dev/null
++++ b/ps4/PS4Keyboard.h
+@@ -0,0 +1,30 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++// M33: the PS4's own keyboard (the IME dialog) for PPSSPP's text fields (INPUT_TEXT_MODAL).
++
++#pragma once
++
++#include <string>
++
++namespace PS4Keyboard {
++
++// Opens the keyboard for request `requestId`; false if it can't (one is open already).
++bool Open(int requestId, const std::string &title, const std::string &text, bool password);
++// Whether it's on screen (the pads are left alone then).
++bool IsOpen();
++// Call often: when the keyboard closes, the text (or the cancel) goes back to the request.
++void Update();
++
++}  // namespace PS4Keyboard
 diff --git a/ps4/PS4Main.cpp b/ps4/PS4Main.cpp
 new file mode 100644
-index 0000000..821d1da
+index 0000000..e7f3d53
 --- /dev/null
 +++ b/ps4/PS4Main.cpp
-@@ -0,0 +1,364 @@
+@@ -0,0 +1,375 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -1562,6 +1964,7 @@ index 0000000..821d1da
 +#include "Core/EmuThread.h"
 +#include "Core/MIPS/MIPS.h"
 +#include "ps4/PS4Audio.h"
++#include "ps4/PS4Keyboard.h"
 +#include "ps4/PS4Pad.h"
 +#include "ps4/PS4VulkanWSI.h"
 +
@@ -1714,9 +2117,12 @@ index 0000000..821d1da
 +		});
 +	});
 +
-+	// The main thread polls the pads, about 240 times a second.
++	// The main thread polls the pads, about 240 times a second (not while the keyboard is up: it
++	// has the pad then), and hands typed text back.
 +	while (!(g_quitRequested || g_restartRequested)) {
-+		PS4Pad::Poll();
++		PS4Keyboard::Update();
++		if (!PS4Keyboard::IsOpen())
++			PS4Pad::Poll();
 +		std::this_thread::sleep_for(std::chrono::microseconds(4000));
 +	}
 +	Trace("exiting");
@@ -1775,8 +2181,13 @@ index 0000000..821d1da
 +		// No way to start ourselves again: quit, the user starts the app from the home screen.
 +		g_restartRequested = true;
 +		return true;
++	case SystemRequestType::INPUT_TEXT_MODAL:
++		// the PS4's keyboard; the text comes back through PS4Keyboard::Update
++		if (!PS4Keyboard::Open(requestId, param1, param2, param3 != 0))
++			g_requestManager.PostSystemFailure(requestId);
++		return true;
 +	default:
-+		// TODO: INPUT_TEXT_MODAL through sceImeDialog (as Resonance's keyboard), folder browsing.
++		// TODO: folder browsing.
 +		return false;
 +	}
 +}
@@ -1847,6 +2258,8 @@ index 0000000..821d1da
 +	switch (prop) {
 +	case SYSPROP_HAS_BACK_BUTTON:
 +		return true;
++	case SYSPROP_HAS_TEXT_INPUT_DIALOG:
++		return true;  // the PS4's keyboard (ps4/PS4Keyboard.cpp)
 +	case SYSPROP_CAN_JIT:
 +		return true;
 +	case SYSPROP_APP_GOLD:
@@ -3213,10 +3626,10 @@ index 0000000..1a3454c
 +PFN_vkGetInstanceProcAddr ps4_vk_get_instance_proc_addr();
 diff --git a/ps4/ps4.cmake b/ps4/ps4.cmake
 new file mode 100644
-index 0000000..8bea79d
+index 0000000..8265d01
 --- /dev/null
 +++ b/ps4/ps4.cmake
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,35 @@
 +# M33: PPSSPP's PS4 frontend, included from the top CMakeLists.txt once ${TargetBin} exists.
 +# Built with M33's toolchain (toolchain/ps4-m33.cmake, and ps4-love-style.cmake as the project
 +# include: PS4_RUNTIME_SOURCES, ps4_link_mesa, ps4_add_eboot).
@@ -3227,6 +3640,8 @@ index 0000000..8bea79d
 +	ps4/PS4Audio.h
 +	ps4/PS4Brand.cpp
 +	ps4/PS4Brand.h
++	ps4/PS4Keyboard.cpp
++	ps4/PS4Keyboard.h
 +	ps4/PS4Pad.cpp
 +	ps4/PS4Pad.h
 +	ps4/PS4StartupClip.cpp
@@ -3241,6 +3656,9 @@ index 0000000..8bea79d
 +
 +# The network library's shares (port/ps4_netfs.cpp: SMB and NFS under /net)
 +target_link_libraries(${TargetBin} ${PS4_SYSROOT}/lib/libnfs.a ${PS4_SYSROOT}/lib/libsmb2.a)
++
++# HTTPS (RetroAchievements, downloads): naett's curl backend on the sysroot's static curl + OpenSSL
++target_link_libraries(${TargetBin} ${PS4_SYSROOT}/lib/libcurl.a ${PS4_SYSROOT}/lib/libssl.a ${PS4_SYSROOT}/lib/libcrypto.a ${PS4_SYSROOT}/lib/libz.a)
 +
 +# RADV on GNM, the system libraries, and eboot.bin
 +ps4_link_mesa(${TargetBin})

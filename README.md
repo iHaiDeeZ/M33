@@ -23,7 +23,12 @@ Status: **v00.01 builds and packages; not yet tested on a console.**
   Settings > Controls.
 - Audio: sceAudioOut, 48 kHz (PPSSPP's mixer resamples).
 - Video and audio decoding: FFmpeg 7.1 (the rpcs3 port's PS4 build: H.264, ATRAC3/3+, MP3, AAC).
-- UI: PPSSPP's own (controller friendly, device type TV), in the console's language.
+- UI: PPSSPP's own (controller friendly, device type TV), in the console's language. Text fields
+  open the PS4's keyboard (`ps4/PS4Keyboard.cpp`, from Resonance; Cross confirms: param.sfo
+  ATTRIBUTE 0x2).
+- Network: HTTPS (RetroAchievements) through naett's curl backend on the sysroot's static
+  curl + OpenSSL, with Mozilla's CA bundle in the package (`assets/cacert.pem`). Host names go
+  through libSceNet's resolver (`port/ps4_net.cpp`).
 
 ## On the console
 
@@ -110,9 +115,6 @@ it in the game browser. It is installed to `/data/March33/PSP/NAND`.
 ## Not yet
 
 - Testing on a console (first boot, then games). Watch `boot-trace.log` for the milestones.
-- Text input: PPSSPP's text fields need `INPUT_TEXT_MODAL` through sceImeDialog (Resonance's keyboard).
-- HTTPS (achievements, downloads): naett's curl backend loads libcurl with `dlopen`; the sysroot's
-  static curl could be wired in instead.
 - A home screen of its own: Resonance's launcher themes (cover flow, XMB) could front PPSSPP's UI.
 
 ## License

@@ -73,6 +73,15 @@ bool isNumeric(const char* name) {
 
 extern "C" int __wrap_getaddrinfo(const char* node, const char* service, const struct addrinfo* hints,
                                   struct addrinfo** res) {
+    // M33: musl answers AI_ADDRCONFIG / AI_V4MAPPED by probing the network with Linux socket calls,
+    // which the PS4's kernel refuses, so the lookup failed (PPSSPP asks for AI_ADDRCONFIG). The PS4
+    // has IPv4: drop them.
+    struct addrinfo plain = {};
+    if (hints) {
+        plain = *hints;
+        plain.ai_flags &= ~(AI_ADDRCONFIG | AI_V4MAPPED);
+        hints = &plain;
+    }
     if (!node || !*node || isNumeric(node) || (hints && (hints->ai_flags & AI_NUMERICHOST)))
         return __real_getaddrinfo(node, service, hints, res);
     char address[64];
