@@ -448,6 +448,42 @@ index 335a280..332a7e8 100644
  	static char *map_hint = nullptr;
  
  #if PPSSPP_ARCH(AMD64)
+diff --git a/Common/Net/HTTPRequest.cpp b/Common/Net/HTTPRequest.cpp
+index 6f260b0..f494e36 100644
+--- a/Common/Net/HTTPRequest.cpp
++++ b/Common/Net/HTTPRequest.cpp
+@@ -133,6 +133,17 @@ std::shared_ptr<Request> RequestManager::StartDownload(std::string_view url, con
+ 	return dl;
+ }
+ 
++std::shared_ptr<Request> RequestManager::StartDownloadResolved(std::string_view url, const Path &outfile, RequestFlags flags, net::ResolveFunc customResolve, std::string_view name, RequestCompletionCallback completionCallback) {
++	std::shared_ptr<Request> dl = CreateRequest(RequestMethod::GET, url, "", "", outfile, flags, std::move(customResolve), name);
++	if (!userAgent_.empty()) {
++		dl->SetUserAgent(userAgent_);
++	}
++	dl->SetCallback(completionCallback);
++	newDownloads_.push_back(dl);
++	dl->Start();
++	return dl;
++}
++
+ std::shared_ptr<Request> RequestManager::AsyncPostWithCallback(
+ 	std::string_view url,
+ 	std::string_view postData,
+diff --git a/Common/Net/HTTPRequest.h b/Common/Net/HTTPRequest.h
+index 0cd8db3..02de826 100644
+--- a/Common/Net/HTTPRequest.h
++++ b/Common/Net/HTTPRequest.h
+@@ -115,6 +115,9 @@ class RequestManager {
+ 
+ 	// NOTE: This is the only version that supports the cache flag (for now).
+ 	std::shared_ptr<Request> StartDownload(std::string_view url, const Path &outfile, RequestFlags flags, const char *acceptMime = nullptr, std::string_view name = "", RequestCompletionCallback completionCallback = {});
++	// The same with a host resolver of the caller's (plain HTTP only, no cache): what the host name is
++	// looked up as (an IP, say), the request still naming the host.
++	std::shared_ptr<Request> StartDownloadResolved(std::string_view url, const Path &outfile, RequestFlags flags, std::function<std::string(const std::string &)> customResolve, std::string_view name, RequestCompletionCallback completionCallback);
+ 
+ 	std::shared_ptr<Request> AsyncPostWithCallback(
+ 		std::string_view url,
 diff --git a/Common/Net/Resolve.cpp b/Common/Net/Resolve.cpp
 index 60321e2..99405a8 100644
 --- a/Common/Net/Resolve.cpp
@@ -852,6 +888,20 @@ index df985bc..5bf2ed4 100644
  }
  
  void UIBackgroundShutdown() {
+diff --git a/UI/CwCheatScreen.cpp b/UI/CwCheatScreen.cpp
+index bab863f..19146b5 100644
+--- a/UI/CwCheatScreen.cpp
++++ b/UI/CwCheatScreen.cpp
+@@ -251,7 +251,9 @@ void CwCheatScreen::CreateSettingsViews(UI::ViewGroup *leftColumn) {
+ 		});
+ 	});
+ #if !defined(MOBILE_DEVICE)
++#if !PPSSPP_PLATFORM(PS4)  // M33: no text editor to open it in on the PS4
+ 	leftColumn->Add(new Choice(cw->T("Edit Cheat File")))->OnClick.Handle(this, &CwCheatScreen::OnEditCheatFile);
++#endif
+ #endif
+ 	leftColumn->Add(new Choice(di->T("Disable All")))->OnClick.Handle(this, &CwCheatScreen::OnDisableAll);
+ 	leftColumn->Add(new PopupSliderChoice(&g_Config.iCwCheatRefreshIntervalMs, 1, 1000, 77, cw->T("Refresh interval"), 1, screenManager()))->SetFormat(di->T("%d ms"));
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
 index e1a8d56..948fbc1 100644
 --- a/UI/EmuScreen.cpp
@@ -984,10 +1034,19 @@ index e1a8d56..948fbc1 100644
  		UI::LayoutViewHierarchy(*ctx, RootMargins(), root_, LayoutMode(), UseImmersiveMode());
  		root_->Draw(*ctx);
 diff --git a/UI/FirmwareScreen.cpp b/UI/FirmwareScreen.cpp
-index 444036b..a3d9cc8 100644
+index 444036b..986cd4c 100644
 --- a/UI/FirmwareScreen.cpp
 +++ b/UI/FirmwareScreen.cpp
-@@ -27,6 +27,9 @@
+@@ -16,6 +16,8 @@
+ // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
+ 
+ #include "Common/Data/Text/I18n.h"
++#include "Common/Net/Resolve.h"
++#include "Common/Net/SocketCompat.h"
+ #include "Common/Data/Text/Parsers.h"
+ #include "Common/Log.h"
+ #include "Common/StringUtils.h"
+@@ -27,6 +29,9 @@
  #include "Common/UI/View.h"
  #include "Common/UI/ViewGroup.h"
  
@@ -997,7 +1056,7 @@ index 444036b..a3d9cc8 100644
  #include "Core/Config.h"
  #include "Core/System.h"
  #include "Core/Util/PathUtil.h"
-@@ -118,12 +121,28 @@ void FirmwareScreen::CreateSettingsViews(UI::ViewGroup *parent) {
+@@ -118,12 +123,28 @@ void FirmwareScreen::CreateSettingsViews(UI::ViewGroup *parent) {
  		LaunchVSH();
  	});
  	launch->SetEnabled(!gameRunning && info_.hasVsh && FirmwareVersionSupportsVSH(info_.version));
@@ -1026,7 +1085,7 @@ index 444036b..a3d9cc8 100644
  	if (System_GetPropertyBool(SYSPROP_HAS_FILE_BROWSER)) {
  		Choice *install = parent->Add(new Choice(iz->T("Install PSP firmware update"), ImageID("I_FOLDER_UPLOAD")));
  		install->OnClick.Add([this](UI::EventParams &) {
-@@ -167,6 +186,42 @@ void FirmwareScreen::LaunchVSH() {
+@@ -167,6 +188,65 @@ void FirmwareScreen::LaunchVSH() {
  	System_PostUIMessage(UIMessage::REQUEST_GAME_BOOT, (nandRoot_ / "flash0/vsh/module/vshmain.prx").ToString());
  }
  
@@ -1036,6 +1095,27 @@ index 444036b..a3d9cc8 100644
 +static const char *const kSonyFirmwareUrl =
 +	"http://du01.psp.update.playstation.org/update/psp/image/us/2014_1212_6be8878f475ac5b1a499b95ab2f7d301/EBOOT.PBP";
 +static const u64 kSonyFirmwareSize = 32580549;
++
++// Sony's update server by the console's DNS, or else by public DNS servers asked directly: a
++// jailbroken console's DNS often blocks Sony's domains (against system updates).
++static std::string ResolvePastBlockingDNS(const std::string &host) {
++	addrinfo *res = nullptr;
++	std::string error;
++	if (net::DNSResolve(host, "80", &res, error)) {
++		net::DNSResolveFree(res);
++		return host;
++	}
++	for (const char *dns : { "1.1.1.1", "8.8.8.8" }) {
++		uint32_t address = 0;
++		if (net::DirectDNSLookupIPV4(dns, host.c_str(), &address)) {
++			char ip[32];
++			inet_ntop(AF_INET, &address, ip, sizeof(ip));
++			NOTICE_LOG(Log::Loader, "%s by %s: %s (the console's DNS didn't answer)", host.c_str(), dns, ip);
++			return ip;
++		}
++	}
++	return host;
++}
 +
 +void FirmwareScreen::DownloadFromSony() {
 +	auto sy = GetI18NCategory(I18NCat::SYSTEM);
@@ -1052,7 +1132,7 @@ index 444036b..a3d9cc8 100644
 +	File::CreateFullPath(dir);
 +	File::Delete(file);
 +	g_OSD.Show(OSDType::MESSAGE_INFO, sy->T("Downloading PSP firmware 6.61 from Sony..."), 3.0f, "m33fw");
-+	g_DownloadManager.StartDownload(kSonyFirmwareUrl, file, http::RequestFlags::ProgressBar, nullptr, "psp661",
++	g_DownloadManager.StartDownloadResolved(kSonyFirmwareUrl, file, http::RequestFlags::ProgressBar, &ResolvePastBlockingDNS, "psp661",
 +		[install, file](http::Request &req) {
 +			auto sy = GetI18NCategory(I18NCat::SYSTEM);
 +			if (req.ResultCode() == 200 && File::GetFileSize(file) == kSonyFirmwareSize) {
@@ -1060,7 +1140,9 @@ index 444036b..a3d9cc8 100644
 +			} else {
 +				ERROR_LOG(Log::Loader, "PSP firmware download failed: HTTP %d, %lld bytes", req.ResultCode(), (long long)File::GetFileSize(file));
 +				File::Delete(file);
-+				g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Couldn't download the PSP firmware. Check the console's internet connection."), 6.0f, "m33fw");
++				g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Couldn't download the PSP firmware. Check the console's internet connection."),
++					ApplySafeSubstitutions(sy->T("M33FirmwareByHand", "Or copy Sony's 6.61 update (EBOOT.PBP) to %1 and press this again"), file.ToVisualString()),
++					10.0f, "m33fw");
 +			}
 +		});
 +}
@@ -2286,10 +2368,10 @@ index 0000000..4cd600c
 +}  // namespace PS4Keyboard
 diff --git a/ps4/PS4Main.cpp b/ps4/PS4Main.cpp
 new file mode 100644
-index 0000000..f30f77f
+index 0000000..e1a4465
 --- /dev/null
 +++ b/ps4/PS4Main.cpp
-@@ -0,0 +1,417 @@
+@@ -0,0 +1,420 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -2335,6 +2417,7 @@ index 0000000..f30f77f
 +#include "Common/GPU/Vulkan/VulkanContext.h"
 +#include "Common/GPU/Vulkan/VulkanGraphicsContext.h"
 +#include "Common/Log.h"
++#include "Common/Net/Resolve.h"
 +#include "Common/Log/LogManager.h"
 +#include "Common/StringUtils.h"
 +#include "Common/System/Display.h"
@@ -2690,6 +2773,8 @@ index 0000000..f30f77f
 +		return true;  // the PS4's keyboard (ps4/PS4Keyboard.cpp)
 +	case SYSPROP_CAN_JIT:
 +		return true;
++	case SYSPROP_SUPPORTS_HTTPS:
++		return net::HTTPSAvailable();  // libcurl + OpenSSL, linked in (ps4/ps4.cmake)
 +	case SYSPROP_APP_GOLD:
 +		return false;
 +	default:
@@ -4075,10 +4160,10 @@ index 0000000..1c86573
 +}
 diff --git a/ps4/PS4VulkanWSI.cpp b/ps4/PS4VulkanWSI.cpp
 new file mode 100644
-index 0000000..3f201a5
+index 0000000..606695d
 --- /dev/null
 +++ b/ps4/PS4VulkanWSI.cpp
-@@ -0,0 +1,583 @@
+@@ -0,0 +1,649 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4152,7 +4237,17 @@ index 0000000..3f201a5
 +int sVideo = -1;
 +OrbisKernelEqueue sFlipQueue;
 +u64 sFlipsSubmitted = 0;
-+int sNextFirstBuffer = 0;
++// VideoOut's 16 buffer slots, as 4 banks of kMaxImages: a swapchain takes a free bank. A bank
++// comes free only once VideoOut lets go of it: sceVideoOutUnregisterBuffers fails while one of
++// its buffers is on screen (or still queued to be, the flips being the GPU's), which is just when
++// PPSSPP destroys the old swapchain after making the new one. Such a set is parked (its memory
++// kept: the screen may still be showing it) and released after the next flips. (Alternating
++// between two fixed banks without checking leaked one on the third swapchain, and then every new
++// one failed with 0x80290010: no picture at all.)
++constexpr int kBanks = 4;
++bool sBankUsed[kBanks] {};
++struct PS4Swapchain;
++std::vector<PS4Swapchain *> sRetired;
 +std::mutex sMutex;
 +
 +template<typename T>
@@ -4338,10 +4433,47 @@ index 0000000..3f201a5
 +	return UINT32_MAX;
 +}
 +
++void FreeImages(PS4Swapchain *sc);
++
++// Gives the swapchain's buffers back to VideoOut, then frees it; parks it if VideoOut won't yet.
 +void FreeSwapchain(PS4Swapchain *sc)
 +{
 +	if (sc->bufferSet >= 0)
-+		sceVideoOutUnregisterBuffers(sVideo, sc->bufferSet);
++	{
++		const int r = sceVideoOutUnregisterBuffers(sVideo, sc->bufferSet);
++		if (r < 0)
++		{
++			WARN_LOG(Log::G3D, "PS4WSI: buffers %d+ still in use (%x), released later", sc->firstBuffer, r);
++			sRetired.push_back(sc);
++			return;
++		}
++		sBankUsed[sc->firstBuffer / kMaxImages] = false;
++		sc->bufferSet = -1;
++	}
++	FreeImages(sc);
++}
++
++// Parked swapchains VideoOut has let go of since.
++void ReleaseRetired()
++{
++	for (size_t i = 0; i < sRetired.size();)
++	{
++		PS4Swapchain *sc = sRetired[i];
++		if (sceVideoOutUnregisterBuffers(sVideo, sc->bufferSet) < 0)
++		{
++			i++;
++			continue;
++		}
++		NOTICE_LOG(Log::G3D, "PS4WSI: buffers %d+ released", sc->firstBuffer);
++		sBankUsed[sc->firstBuffer / kMaxImages] = false;
++		sc->bufferSet = -1;
++		sRetired.erase(sRetired.begin() + i);
++		FreeImages(sc);
++	}
++}
++
++void FreeImages(PS4Swapchain *sc)
++{
 +	auto destroyImage = Device<PFN_vkDestroyImage>(sc->device, "vkDestroyImage");
 +	auto freeMemory = Device<PFN_vkFreeMemory>(sc->device, "vkFreeMemory");
 +	for (u32 i = 0; i < sc->imageCount; i++)
@@ -4419,13 +4551,27 @@ index 0000000..3f201a5
 +	OrbisVideoOutBufferAttribute attribute;
 +	sceVideoOutSetBufferAttribute(&attribute, ORBIS_VIDEO_OUT_PIXEL_FORMAT_A8B8G8R8_SRGB, ORBIS_VIDEO_OUT_TILING_MODE_LINEAR, 0,
 +			ps4wsi::kWidth, ps4wsi::kHeight, pitch);
-+	// alternate between two buffer index ranges so a new swapchain can register while the old one is still on screen
-+	sc->firstBuffer = sNextFirstBuffer;
-+	sNextFirstBuffer = sNextFirstBuffer == 0 ? 8 : 0;
-+	sc->bufferSet = sceVideoOutRegisterBuffers(sVideo, sc->firstBuffer, addresses, (int)sc->imageCount, &attribute);
++	// a free bank (the old swapchain is usually still on screen while this one registers)
++	ReleaseRetired();
++	sc->bufferSet = -1;
++	int registered = -1;
++	for (int bank = 0; bank < kBanks && sc->bufferSet < 0; bank++)
++	{
++		if (sBankUsed[bank])
++			continue;
++		sc->firstBuffer = bank * (int)kMaxImages;
++		registered = sceVideoOutRegisterBuffers(sVideo, sc->firstBuffer, addresses, (int)sc->imageCount, &attribute);
++		if (registered >= 0)
++		{
++			sc->bufferSet = registered;
++			sBankUsed[bank] = true;
++		}
++	}
 +	if (sc->bufferSet < 0)
 +	{
-+		ERROR_LOG(Log::G3D, "PS4WSI: sceVideoOutRegisterBuffers failed: %x", sc->bufferSet);
++		sc->bufferSet = registered < 0 ? registered : -1;
++		ERROR_LOG(Log::G3D, "PS4WSI: sceVideoOutRegisterBuffers failed: %x (%d parked)", sc->bufferSet, (int)sRetired.size());
++		sc->bufferSet = -1;
 +		FreeSwapchain(sc);
 +		return VK_ERROR_INITIALIZATION_FAILED;
 +	}
@@ -4570,6 +4716,11 @@ index 0000000..3f201a5
 +		{
 +			sFlipsSubmitted++;
 +			CountPresent();
++			if (!sRetired.empty())
++			{
++				std::lock_guard<std::mutex> _(sMutex);
++				ReleaseRetired();
++			}
 +			// the PS4 keeps its boot splash (the app's picture) over everything until the app
 +			// says it has a picture of its own
 +			if (sFlipsSubmitted == 1)
