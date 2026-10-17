@@ -792,7 +792,7 @@ index df985bc..5bf2ed4 100644
  
  void UIBackgroundShutdown() {
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
-index e1a8d56..1a6a715 100644
+index e1a8d56..dd88e1f 100644
 --- a/UI/EmuScreen.cpp
 +++ b/UI/EmuScreen.cpp
 @@ -60,6 +60,14 @@ using namespace std::placeholders;
@@ -872,19 +872,44 @@ index e1a8d56..1a6a715 100644
  	if (!PSP_IsInited())
  		return;
  
-@@ -1743,6 +1778,11 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
- 			gpu->BeginHostFrame(displayLayoutConfig);
- 		}
- 
+@@ -1735,6 +1770,14 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+ 	PSP_UpdateDebugStats((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::DEBUG_STATS || g_Config.bLogFrameDrops);
+ 	clearColor_ = 0;
+ 	bool blockedExecution = Achievements::IsBlockingExecution();
 +#if PPSSPP_PLATFORM(PS4)
-+		// M33: rewind on L2 (snapshots every few frames; held, it loads older ones)
-+		if (coreState == CORE_RUNNING_CPU && !PSP_CoreParameter().frozen)
-+			M33Rewind_Frame(PS4Pad::RewindHeld());
++	// M33: rewind on L2 (ps4/PS4Rewind.cpp). Going back, the emulator doesn't run: the recorded
++	// pictures play instead (renderUI draws them).
++	if (!blockedExecution && coreState == CORE_RUNNING_CPU && !PSP_CoreParameter().frozen &&
++			M33Rewind_Frame(PS4Pad::RewindHeld())) {
++		return flags;
++	}
 +#endif
- 		// Freeze-frame functionality (loads a savestate on every frame). It's a savestate load
- 		// like any other, so it's banned in hardcore mode - and checked here rather than only
- 		// where it's toggled, since hardcore mode can come up after the fact, once the game
-@@ -1872,6 +1912,13 @@ void EmuScreen::renderUI() {
+ 	if (!blockedExecution) {
+ 		// We process savestates before running the frame.
+ 		SaveState::Process();
+@@ -1805,6 +1848,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+ 			// Run post processing and other passes.
+ 			gpu->PrepareCopyDisplayToOutput(displayLayoutConfig);
+ 			gpu->EndHostFrame();
++#if PPSSPP_PLATFORM(PS4)
++			if (coreState == CORE_RUNNING_CPU)
++				M33Rewind_AfterFrame();
++#endif
+ 
+ 			// The right time to run this
+ 			if (ScreenshotNotifyPostGameRender(draw) && skipBufferEffects) {
+@@ -1841,6 +1888,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+ }
+ 
+ bool EmuScreen::hasVisibleUI() {
++#if PPSSPP_PLATFORM(PS4)
++	if (M33Rewind_Active())
++		return true;  // (the pictures going back are drawn with the UI)
++#endif
+ 	// Regular but uncommon UI.
+ 	if (saveStatePreview_->GetVisibility() != UI::V_GONE || loadingSpinner_->GetVisibility() == UI::V_VISIBLE)
+ 		return true;
+@@ -1872,6 +1923,14 @@ void EmuScreen::renderUI() {
  	// This sets up some important states but not the viewport.
  	ctx->Begin();
  
@@ -894,6 +919,7 @@ index e1a8d56..1a6a715 100644
 +		ctx->Flush();
 +		return;
 +	}
++	M33Rewind_Draw(*ctx, ctx->GetBounds());
 +#endif
  	if (root_) {
  		UI::LayoutViewHierarchy(*ctx, RootMargins(), root_, LayoutMode(), UseImmersiveMode());
@@ -1962,10 +1988,10 @@ index 0000000..870978a
 +void M33_EndIntro();
 diff --git a/ps4/PS4GameBoot.cpp b/ps4/PS4GameBoot.cpp
 new file mode 100644
-index 0000000..ef4f6bb
+index 0000000..27779a0
 --- /dev/null
 +++ b/ps4/PS4GameBoot.cpp
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,405 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -2001,8 +2027,13 @@ index 0000000..ef4f6bb
 +#include "Core/Config.h"
 +#include "Core/HLE/sceAudiocodec.h"
 +#include "Core/HW/SimpleAudioDec.h"
++#include "Common/UI/Context.h"
++#include "Common/GPU/thin3d.h"
++#include "Common/Render/DrawBuffer.h"
 +#include "ps4/PS4GameBoot.h"
 +#include "ps4/PS4StartupClip.h"
++
++int lzrc_decompress(void *out, int out_len, void *in, int in_len);  // Core/FileSystems/tlzrc.cpp
 +
 +namespace {
 +
@@ -2071,6 +2102,230 @@ index 0000000..ef4f6bb
 +	return out;
 +}
 +
++// The PSP logo the firmware draws over the end of the video (which is plain white there): the
++// video is only the background. The logo is the firmware's own image, tex_psp_logo in
++// flash0:/vsh/resource/opening_plugin.rco (the PSP letters, TM and "PlayStation(R)Portable", 260x80),
++// read from the installed firmware like the video: an RCO's tree and images are LZRC ("RLZ")
++// compressed, which PPSSPP decodes already (Core/FileSystems/tlzrc.cpp, for compressed PBPs), and
++// the image is a GIM (8-bit indexed, swizzled). Layout of both after RCOMage (rcofile.h).
++constexpr double kLogoIn = 1.0, kLogoFade = 0.45, kLogoHold = 1.3;
++
++std::vector<u8> g_logo;  // RGBA
++int g_logoW = 0, g_logoH = 0;
++Draw::Texture *g_logoTex = nullptr;
++
++u32 Le32(const u8 *p) {
++	return p[0] | (p[1] << 8) | (p[2] << 16) | ((u32)p[3] << 24);
++}
++
++u16 Le16(const u8 *p) {
++	return p[0] | (p[1] << 8);
++}
++
++bool Unpack(int compression, const u8 *src, size_t srcLen, size_t outLen, std::vector<u8> *out) {
++	out->resize(outLen);
++	if (compression == 0) {
++		if (srcLen < outLen)
++			return false;
++		memcpy(out->data(), src, outLen);
++		return true;
++	}
++	if (compression == 2) {
++		std::vector<u8> in(src, src + srcLen);
++		in.resize(srcLen + 64);  // (the range decoder reads a little ahead)
++		return lzrc_decompress(out->data(), (int)outLen, in.data(), (int)srcLen) == (int)outLen;
++	}
++	return false;
++}
++
++// An image of an RCO by its label, as stored (GIM, PNG, ...).
++bool RcoImage(const std::string &rco, const char *name, std::vector<u8> *image) {
++	const u8 *d = (const u8 *)rco.data();
++	const size_t n = rco.size();
++	if (n < 0xB0 || memcmp(d, "\0PRF", 4) != 0)
++		return false;
++	auto field = [&](int i) { return Le32(d + 0x10 + 4 * i); };
++	const u32 pImg = field(5), pLabel = field(12), pImgData = field(28);
++	std::vector<u8> tree;
++	size_t base = 0;
++	const int compression = Le32(d + 0x0C) >> 4;
++	if (compression) {
++		base = 0xA4;
++		const u32 packed = Le32(d + 0xA4), unpacked = Le32(d + 0xA8);
++		if (0xB0 + (size_t)packed > n || unpacked > 4 * 1024 * 1024 || !Unpack(compression, d + 0xB0, packed, unpacked, &tree))
++			return false;
++	} else {
++		tree.assign(d, d + n);
++	}
++	auto at = [&](u32 fileOffset, size_t len) -> const u8 * {
++		const size_t i = (size_t)fileOffset - base;
++		return fileOffset >= base && i + len <= tree.size() ? tree.data() + i : nullptr;
++	};
++	const u8 *table = at(pImg, 0x28);
++	if (pImg == 0xFFFFFFFF || !table)
++		return false;
++	const u32 count = Le32(table + 16);
++	u32 e = pImg + 0x28;
++	for (u32 i = 0; i < count; i++) {
++		const u8 *entry = at(e, 0x38);
++		if (!entry)
++			return false;
++		const u8 *label = at(pLabel + Le32(entry + 4), 1);
++		const size_t room = label ? tree.size() - (label - tree.data()) : 0;
++		if (label && strnlen((const char *)label, room) == strlen(name) && memcmp(label, name, strlen(name)) == 0) {
++			const int comp = Le16(entry + 0x2A);
++			const u32 packed = Le32(entry + 0x2C), offset = Le32(entry + 0x30);
++			const u32 size = comp ? Le32(entry + 0x34) : packed;
++			if ((size_t)pImgData + offset + packed > n || size > 16 * 1024 * 1024)
++				return false;
++			return Unpack(comp, d + pImgData + offset, packed, size, image);
++		}
++		const u32 next = Le32(entry + 20);
++		e += next ? next : 0x28;
++	}
++	return false;
++}
++
++u32 GimColor(int format, u32 v) {
++	switch (format) {
++	case 3: return v;  // RGBA8888
++	case 2: return ((v & 0xF) * 17) | (((v >> 4) & 0xF) * 17 << 8) | (((v >> 8) & 0xF) * 17 << 16) | ((v >> 12) * 17 << 24);
++	case 1: return ((v & 31) * 255 / 31) | (((v >> 5) & 31) * 255 / 31 << 8) | (((v >> 10) & 31) * 255 / 31 << 16) | ((v >> 15) ? 0xFF000000 : 0);
++	default: return ((v & 31) * 255 / 31) | (((v >> 5) & 63) * 255 / 63 << 8) | (((v >> 11) & 31) * 255 / 31 << 16) | 0xFF000000;
++	}
++}
++
++// A GIM picture as RGBA (the formats the firmware's use: direct 16/32-bit and indexed 4/8-bit).
++bool DecodeGim(const std::vector<u8> &gim, std::vector<u8> *rgba, int *outW, int *outH) {
++	const u8 *d = gim.data();
++	const size_t n = gim.size();
++	if (n < 0x20 || memcmp(d, "MIG.00.1PSP", 11) != 0)
++		return false;
++	struct Pic { int format = -1, order = 0, w = 0, h = 0; const u8 *pixels = nullptr; size_t room = 0; };
++	Pic image, palette;
++	std::vector<std::pair<size_t, size_t>> todo = { { 0x10, n } };
++	while (!todo.empty()) {
++		size_t off = todo.back().first, end = todo.back().second;
++		todo.pop_back();
++		while (off + 0x10 <= end) {
++			const u16 id = Le16(d + off);
++			const u32 size = Le32(d + off + 4), data = Le32(d + off + 12);
++			if (size < 0x10 || off + size > n)
++				break;
++			if (id == 2 || id == 3) {
++				todo.push_back({ off + data, off + size });
++			} else if ((id == 4 || id == 5) && off + 0x30 <= n) {
++				const u8 *b = d + off + 0x10;
++				Pic &pic = id == 4 ? image : palette;
++				pic.format = Le16(b + 4);
++				pic.order = Le16(b + 6);
++				pic.w = Le16(b + 8);
++				pic.h = Le16(b + 10);
++				const u32 pix = Le32(b + 0x1C);
++				if (off + 0x10 + pix < off + size) {
++					pic.pixels = b + pix;
++					pic.room = off + size - (off + 0x10 + pix);
++				}
++			}
++			off += size;
++		}
++	}
++	if (!image.pixels || image.w <= 0 || image.h <= 0 || image.w > 1024 || image.h > 1024)
++		return false;
++	static const int kBits[] = { 16, 16, 16, 32, 4, 8 };
++	if (image.format < 0 || image.format > 5)
++		return false;
++	const int bits = kBits[image.format];
++	const int perBlock = 128 / bits;  // a row is a whole number of 16-byte blocks
++	const size_t rowBytes = (size_t)((image.w + perBlock - 1) / perBlock) * 16;
++	const int rows = image.order == 1 ? (image.h + 7) / 8 * 8 : image.h;
++	if (rowBytes * rows > image.room)
++		return false;
++	std::vector<u8> linear(rowBytes * rows);
++	if (image.order == 1) {
++		// "faster" order: 16-byte by 8-row blocks
++		const u8 *src = image.pixels;
++		for (int by = 0; by < rows; by += 8)
++			for (size_t bx = 0; bx < rowBytes / 16; bx++)
++				for (int y = 0; y < 8; y++, src += 16)
++					memcpy(&linear[(by + y) * rowBytes + bx * 16], src, 16);
++	} else {
++		memcpy(linear.data(), image.pixels, linear.size());
++	}
++	std::vector<u32> colors;
++	if (image.format >= 4) {
++		if (!palette.pixels || palette.format < 0 || palette.format > 3)
++			return false;
++		const int pbytes = palette.format == 3 ? 4 : 2;
++		const int entries = std::min<int>(palette.w * std::max(1, palette.h), (int)(palette.room / pbytes));
++		for (int i = 0; i < entries; i++)
++			colors.push_back(GimColor(palette.format, pbytes == 4 ? Le32(palette.pixels + i * 4) : Le16(palette.pixels + i * 2)));
++		colors.resize(256, 0);
++	}
++	rgba->resize((size_t)image.w * image.h * 4);
++	u32 *out = (u32 *)rgba->data();
++	for (int y = 0; y < image.h; y++) {
++		const u8 *row = &linear[y * rowBytes];
++		for (int x = 0; x < image.w; x++) {
++			u32 c;
++			switch (image.format) {
++			case 4: c = colors[(row[x / 2] >> ((x & 1) * 4)) & 15]; break;
++			case 5: c = colors[row[x]]; break;
++			case 3: c = Le32(row + x * 4); break;
++			default: c = GimColor(image.format, Le16(row + x * 2)); break;
++			}
++			out[y * image.w + x] = c;
++		}
++	}
++	*outW = image.w;
++	*outH = image.h;
++	return true;
++}
++
++void LoadLogo() {
++	if (!g_logo.empty())
++		return;
++	std::string rco;
++	std::vector<u8> gim;
++	const Path path = g_Config.nandRootDirectory / "flash0/vsh/resource/opening_plugin.rco";
++	if (File::ReadBinaryFileToString(path, &rco) && RcoImage(rco, "tex_psp_logo", &gim) && DecodeGim(gim, &g_logo, &g_logoW, &g_logoH)) {
++		NOTICE_LOG(Log::Loader, "Game boot: the PSP logo from the firmware, %dx%d", g_logoW, g_logoH);
++	} else {
++		g_logo.clear();
++		WARN_LOG(Log::Loader, "Game boot: no PSP logo in %s", path.c_str());
++	}
++}
++
++void DrawLogo(UIContext &dc, const Bounds &pic, float a) {
++	if (a <= 0.0f || g_logo.empty())
++		return;
++	Draw::DrawContext *draw = dc.GetDrawContext();
++	if (!g_logoTex) {
++		Draw::TextureDesc desc{};
++		desc.type = Draw::TextureType::LINEAR2D;
++		desc.format = Draw::DataFormat::R8G8B8A8_UNORM;
++		desc.width = g_logoW;
++		desc.height = g_logoH;
++		desc.depth = 1;
++		desc.mipLevels = 1;
++		desc.tag = "M33GameBootLogo";
++		desc.initData.push_back(g_logo.data());
++		g_logoTex = draw->CreateTexture(desc);
++		if (!g_logoTex)
++			return;
++	}
++	// at the PSP's own size on its 480x272 screen, centred
++	const float s = pic.w / 480.0f;
++	const float w = g_logoW * s, h = g_logoH * s;
++	const Bounds logo(pic.centerX() - w / 2.0f, pic.centerY() - h / 2.0f, w, h);
++	const u32 alpha = (u32)(std::clamp(a, 0.0f, 1.0f) * 255.0f);
++	dc.Begin();
++	draw->BindTexture(0, g_logoTex);
++	dc.Draw()->DrawTexRect(logo, 0, 0, 1, 1, (alpha << 24) | 0xFFFFFF);
++	dc.Flush();
++	dc.RebindTexture();
++}
++
 +}  // namespace
 +
 +bool M33GameBoot_Start() {
@@ -2096,8 +2351,10 @@ index 0000000..ef4f6bb
 +	g_length = std::max<double>(M33Clip::Duration(), pcmSeconds);
 +	if (g_length < 0.5)
 +		g_length = 2.6;
++	g_length = std::max(g_length, kLogoIn + kLogoFade) + kLogoHold;  // the logo, held a moment
 +	if (!pcm.empty())
 +		M33Clip::SetSound(std::move(pcm));
++	LoadLogo();
 +	g_start = time_now_d();
 +	g_playing = true;
 +	NOTICE_LOG(Log::Loader, "Game boot animation: %.2f s (video %.2f s, sound %.2f s)", g_length, M33Clip::Duration(), pcmSeconds);
@@ -2121,11 +2378,21 @@ index 0000000..ef4f6bb
 +}
 +
 +void M33GameBoot_Draw(UIContext &dc, const Bounds &bounds) {
-+	if (g_playing)
-+		M33Clip::Draw(dc, bounds, time_now_d() - g_start);
++	if (!g_playing)
++		return;
++	const double t = time_now_d() - g_start;
++	M33Clip::Draw(dc, bounds, t);
++	// over the video's picture, letterboxed as M33Clip draws it
++	const float s = std::min(bounds.w / 480.0f, bounds.h / 272.0f);
++	const Bounds pic(bounds.centerX() - 240.0f * s, bounds.centerY() - 136.0f * s, 480.0f * s, 272.0f * s);
++	DrawLogo(dc, pic, (float)((t - kLogoIn) / kLogoFade));
 +}
 +
 +void M33GameBoot_Stop() {
++	if (g_logoTex) {
++		g_logoTex->Release();
++		g_logoTex = nullptr;
++	}
 +	if (g_playing)
 +		M33Clip::Close();
 +	g_playing = false;
@@ -3157,10 +3424,10 @@ index 0000000..2f80279
 +}  // namespace PS4Pad
 diff --git a/ps4/PS4Rewind.cpp b/ps4/PS4Rewind.cpp
 new file mode 100644
-index 0000000..ca143d8
+index 0000000..9a7eace
 --- /dev/null
 +++ b/ps4/PS4Rewind.cpp
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,558 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3178,17 +3445,24 @@ index 0000000..ca143d8
 +// M33: RetroArch-style rewind. Hold L2 and the game plays backwards; let go and it carries on
 +// from there.
 +//
-+// As RetroArch's state manager (libretro-common's state_manager.c): a snapshot is taken every few
-+// frames, but only the newest is kept whole; each older one is kept as its difference to the one
-+// after it (the 2 KB blocks that changed, zstd-compressed), so many seconds of PSP states fit.
-+// Going back undoes those differences one at a time, newest first, at twice the speed it was
-+// played (by the clock: a frame going back costs a snapshot load).
-+// (PPSSPP's own rewind keeps 20 whole-ish states seconds apart and jumps back one per press.)
++// While playing, two things are recorded:
++// - snapshots of the emulator, every kSnapInterval frames. As in RetroArch's state manager, only
++//   the newest is kept whole; each older one as its difference to the one after it (the 2 KB blocks
++//   that changed, zstd-compressed).
++// - the picture on the screen, every kPicInterval frames (at the PSP's 480x272, RGB565, zstd),
++//   each tagged with the snapshot it came after.
++// Holding L2 pauses the emulator and plays the pictures backwards, smoothly, at 1x speeding up to
++// 3x the longer it's held; the snapshots are walked back along with them (cheap: only differences
++// are applied, nothing is loaded). Letting go loads the snapshot of the picture shown, once, and the
++// game carries on from there; holding L2 again rewinds further, as far as is recorded.
++// (PPSSPP's own rewind keeps 20 whole-ish states seconds apart and jumps back one per press. M33's
++// first try loaded a snapshot every frame going back: ~45 ms each, and a 30 fps game drew nothing
++// in the one frame that ran after it, so nothing new was seen.)
 +//
-+// All of it lives in one block of direct memory, mapped once: the two whole snapshots and the
-+// compression output (fixed buffers), and the differences (an allocator of their own, the oldest
-+// dropped when it's full). Nothing of it goes through the app heap: 40 MB snapshot buffers being
-+// reallocated there fragmented it until it ran out (v00.18 crashed with bad_alloc after ~30 min).
++// All of it lives in one block of direct memory, mapped once: the whole snapshots, the compression
++// buffers (fixed), and the history (an allocator of its own, oldest dropped first when it's full).
++// Nothing goes through the app heap: 40 MB snapshot buffers reallocated there fragmented it into a
++// bad_alloc crash (v00.18).
 +
 +#include <algorithm>
 +#include <atomic>
@@ -3200,12 +3474,18 @@ index 0000000..ca143d8
 +#include <zstd.h>
 +
 +#include "Common/Data/Text/I18n.h"
++#include "Common/GPU/thin3d.h"
++#include "Common/Render/DrawBuffer.h"
 +#include "Common/Log.h"
-+#include "Common/TimeUtil.h"
 +#include "Common/System/OSD.h"
 +#include "Common/Thread/ThreadUtil.h"
++#include "Common/TimeUtil.h"
++#include "Common/UI/Context.h"
 +#include "Core/RetroAchievements.h"
 +#include "Core/SaveState.h"
++#include "Core/Screenshot.h"
++#include "GPU/Common/GPUDebugInterface.h"
++#include "GPU/GPUCommon.h"
 +#include "ps4/PS4Rewind.h"
 +
 +extern "C" {
@@ -3224,14 +3504,18 @@ index 0000000..ca143d8
 +
 +namespace {
 +
-+constexpr int kInterval = 6;  // frames between snapshots (10 a second)
-+constexpr double kSpeed = 2.0;  // going back, times the speed it was played (RetroArch: 1x per frame)
-+constexpr int kMaxStepsPerFrame = 4;
++constexpr int kSnapInterval = 6;  // frames between snapshots (10 a second)
++constexpr int kPicInterval = 2;   // frames between pictures (30 a second: every frame of a 30 fps game)
++constexpr double kPicsPerSecond = 60.0 / kPicInterval;
 +constexpr size_t kBlock = 2048;
 +constexpr size_t MB = 1024 * 1024;
 +constexpr size_t LARGE_PAGE = 0x200000;
 +// A whole snapshot: the PSP's RAM (up to 64 MB) and VRAM, and the rest of its state.
 +constexpr size_t kSnapshotCap = 80 * MB;
++constexpr int kPicW = 480, kPicH = 272;
++constexpr size_t kPicRaw = kPicW * kPicH * 2;  // RGB565
++constexpr size_t kPicCap = 512 * 1024;         // a compressed picture, at most (ZSTD_compressBound)
++constexpr size_t kFixed = 3 * kSnapshotCap + kPicRaw + kPicCap + kPicW * kPicH * 4;
 +
 +struct Buffer {
 +	u8 *data = nullptr;
@@ -3240,39 +3524,58 @@ index 0000000..ca143d8
 +
 +struct Delta {
 +	void *data;
-+	size_t size;     // compressed
-+	size_t rawSize;  // uncompressed
++	u32 size;     // compressed
++	u32 rawSize;  // uncompressed
++};
++
++struct Pic {
++	void *data;
++	u32 size;
++	u32 tag;  // the snapshot it came after
 +};
 +
 +bool g_initTried = false;
 +bool g_ready = false;
-+void *g_space = nullptr;  // the differences' allocator
-+std::deque<Delta> g_deltas;  // oldest first; each one turns the state after it into its own
++void *g_space = nullptr;     // the history's allocator
++std::deque<Delta> g_deltas;  // oldest first; the last turns snapshot g_curId into g_curId - 1
++std::deque<Pic> g_pics;      // oldest first
 +
-+Buffer g_cur;   // the newest snapshot, whole (while going back: the one shown)
-+Buffer g_next;  // the one being taken (while going back: a scratch buffer)
-+u8 *g_zout = nullptr;  // compression output, kSnapshotCap
++Buffer g_cur;   // the newest snapshot, whole (going back: the one of the picture shown)
++Buffer g_next;  // the one being taken (going back: a scratch buffer)
++u32 g_curId = 0;
 +bool g_haveCur = false;
++u8 *g_zout = nullptr;     // a difference's compression output, kSnapshotCap
++u8 *g_picRaw = nullptr;   // a picture as RGB565
++u8 *g_picZ = nullptr;     // a picture compressed
++u8 *g_picRgba = nullptr;  // the picture shown, for its texture
++
 +std::thread g_worker;
-+ZSTD_CCtx *g_cctx = nullptr;
++bool g_pending = false;  // a difference compressed in g_zout, to keep once the worker is done
++size_t g_pendingSize = 0, g_pendingRaw = 0;
++bool g_pendingOk = false;
++ZSTD_CCtx *g_cctx = nullptr;   // the worker's
++ZSTD_CCtx *g_pcctx = nullptr;  // the pictures'
 +ZSTD_DCtx *g_dctx = nullptr;
 +
-+int g_frames = 0;
-+double g_stepClock = 0.0;  // wall time the steps going back are owed from
-+int g_steps = 0;
-+double g_captureMs = 0.0, g_loadMs = 0.0;
-+int g_captures = 0, g_loads = 0;
++int g_snapFrames = 0, g_picFrames = 0;
 +bool g_rewinding = false;
-+bool g_endShown = false;
 +std::atomic<bool> g_active{ false };
++double g_heldSince = 0.0, g_lastStep = 0.0, g_owed = 0.0;
++int g_shown = -1;  // index in g_pics of the picture shown going back
++int g_steps = 0;
++bool g_endShown = false;
++Draw::Texture *g_tex = nullptr;
++bool g_texDirty = false;
++
++double g_snapMs = 0.0, g_picMs = 0.0;
++int g_snaps = 0, g_picsTaken = 0;
 +
 +bool Init() {
 +	if (g_initTried)
 +		return g_ready;
 +	g_initTried = true;
-+	const size_t fixed = 3 * kSnapshotCap;
 +	// Leave the rest of the direct memory to the GPU (Vulkan's allocations come from it too).
-+	for (size_t mb : { 448, 384, 336 }) {
++	for (size_t mb : { 640, 512, 448 }) {
 +		const size_t len = mb * MB;
 +		off_t phys = 0;
 +		if (sceKernelAllocateDirectMemory(0, (off_t)sceKernelGetDirectMemorySize(), len, LARGE_PAGE, 0, &phys) != 0)
@@ -3282,32 +3585,66 @@ index 0000000..ca143d8
 +			sceKernelReleaseDirectMemory(phys, len);
 +			continue;
 +		}
-+		u8 *base = (u8 *)addr;
-+		g_cur.data = base;
-+		g_next.data = base + kSnapshotCap;
-+		g_zout = base + 2 * kSnapshotCap;
-+		g_space = create_mspace_with_base(base + fixed, len - fixed, 1);
++		u8 *p = (u8 *)addr;
++		g_cur.data = p;
++		g_next.data = p += kSnapshotCap;
++		g_zout = p += kSnapshotCap;
++		g_picRaw = p += kSnapshotCap;
++		g_picZ = p += kPicRaw;
++		g_picRgba = p += kPicCap;
++		g_space = create_mspace_with_base((u8 *)addr + kFixed, len - kFixed, 1);
 +		g_cctx = ZSTD_createCCtx();
++		g_pcctx = ZSTD_createCCtx();
 +		g_dctx = ZSTD_createDCtx();
-+		if (!g_space || !g_cctx || !g_dctx)
++		if (!g_space || !g_cctx || !g_pcctx || !g_dctx)
 +			break;
 +		g_ready = true;
-+		NOTICE_LOG(Log::SaveState, "Rewind: %d MiB of direct memory (%d MiB for the differences)", (int)mb, (int)((len - fixed) / MB));
++		NOTICE_LOG(Log::SaveState, "Rewind: %d MiB of direct memory (%d MiB for the history)", (int)mb, (int)((len - kFixed) / MB));
 +		return true;
 +	}
-+	WARN_LOG(Log::SaveState, "Rewind: no direct memory for the snapshots, rewind is off");
++	WARN_LOG(Log::SaveState, "Rewind: no direct memory for it, rewind is off");
 +	return false;
 +}
 +
-+void Join() {
-+	if (g_worker.joinable())
-+		g_worker.join();
++u32 OldestId() {
++	return g_curId - (u32)g_deltas.size() - (g_pending ? 1 : 0);  // (one more while a difference is being made)
 +}
 +
-+void ClearDeltas() {
++void DropUnreachablePics() {
++	const u32 oldest = OldestId();
++	while (!g_pics.empty() && g_pics.front().tag < oldest) {
++		mspace_free(g_space, g_pics.front().data);
++		g_pics.pop_front();
++	}
++}
++
++// Room in the history: the oldest go first (a snapshot, and the pictures it was the last of).
++void *Alloc(size_t size) {
++	for (;;) {
++		if (void *p = mspace_malloc(g_space, size))
++			return p;
++		if (!g_deltas.empty()) {
++			mspace_free(g_space, g_deltas.front().data);
++			g_deltas.pop_front();
++			DropUnreachablePics();
++		} else if (!g_pics.empty()) {
++			mspace_free(g_space, g_pics.front().data);
++			g_pics.pop_front();
++		} else {
++			return nullptr;
++		}
++		if (g_shown >= (int)g_pics.size())
++			g_shown = (int)g_pics.size() - 1;
++	}
++}
++
++void ClearHistory() {
 +	for (const Delta &d : g_deltas)
 +		mspace_free(g_space, d.data);
 +	g_deltas.clear();
++	for (const Pic &p : g_pics)
++		mspace_free(g_space, p.data);
++	g_pics.clear();
 +}
 +
 +void Put32(u8 *p, u32 v) {
@@ -3320,21 +3657,8 @@ index 0000000..ca143d8
 +	return v;
 +}
 +
-+// Keeps a difference, dropping the oldest ones to make room.
-+void Store(const u8 *data, size_t size, size_t rawSize) {
-+	void *p;
-+	while (!(p = mspace_malloc(g_space, size))) {
-+		if (g_deltas.empty())
-+			return;
-+		mspace_free(g_space, g_deltas.front().data);
-+		g_deltas.pop_front();
-+	}
-+	memcpy(p, data, size);
-+	g_deltas.push_back({ p, size, rawSize });
-+}
-+
-+// What turns newer back into older: older's size, then each block of older that newer doesn't
-+// have (its index, then its bytes), compressed as one zstd frame.
++// (the worker) What turns newer back into older: older's size, then each block of older that newer
++// doesn't have (its index, then its bytes), compressed as one zstd frame into g_zout.
 +void Encode(const Buffer &older, const Buffer &newer) {
 +	ZSTD_CCtx_reset(g_cctx, ZSTD_reset_session_only);
 +	ZSTD_CCtx_setParameter(g_cctx, ZSTD_c_compressionLevel, 1);
@@ -3353,7 +3677,6 @@ index 0000000..ca143d8
 +		}
 +		rawSize += n;
 +	};
-+
 +	u8 word[4];
 +	Put32(word, (u32)older.size);
 +	feed(word, 4, ZSTD_e_continue);
@@ -3366,40 +3689,51 @@ index 0000000..ca143d8
 +		feed(older.data + at, n, ZSTD_e_continue);
 +	}
 +	feed(nullptr, 0, ZSTD_e_end);
-+	if (ok && rawSize <= kSnapshotCap) {
-+		Store(g_zout, out.pos, rawSize);
++	g_pendingOk = ok && rawSize <= kSnapshotCap;
++	g_pendingSize = out.pos;
++	g_pendingRaw = rawSize;
++}
++
++// Waits for the worker and keeps what it made; g_cur is the newest snapshot after this.
++void Join() {
++	if (g_worker.joinable())
++		g_worker.join();
++	if (!g_pending)
++		return;
++	g_pending = false;
++	std::swap(g_cur, g_next);
++	void *p = g_pendingOk ? Alloc(g_pendingSize) : nullptr;
++	if (p) {
++		memcpy(p, g_zout, g_pendingSize);
++		g_deltas.push_back({ p, (u32)g_pendingSize, (u32)g_pendingRaw });
 +	} else {
-+		ClearDeltas();  // the older ones can't be reached without this one
++		// the older snapshots can't be reached without this difference
++		for (const Delta &d : g_deltas)
++			mspace_free(g_space, d.data);
++		g_deltas.clear();
++		DropUnreachablePics();
 +	}
 +}
 +
-+void Capture() {
++void Snapshot() {
 +	Join();
 +	const double start = time_now_d();
 +	if (SaveState::SaveToBuffer(g_next.data, kSnapshotCap, &g_next.size) != CChunkFileReader::ERROR_NONE) {
 +		WARN_LOG(Log::SaveState, "Rewind: a snapshot didn't fit in %d MiB", (int)(kSnapshotCap / MB));
 +		return;
 +	}
-+	g_captureMs += (time_now_d() - start) * 1000.0;
-+	if (++g_captures == 300) {
-+		size_t bytes = 0;
-+		for (const Delta &d : g_deltas)
-+			bytes += d.size;
-+		NOTICE_LOG(Log::SaveState, "Rewind: snapshot %.1f MiB, %.1f ms each; %d kept (%.1f s), %.0f KiB each",
-+			g_next.size / (double)MB, g_captureMs / g_captures, (int)g_deltas.size(), g_deltas.size() * kInterval / 60.0,
-+			g_deltas.empty() ? 0.0 : bytes / 1024.0 / g_deltas.size());
-+		g_captures = 0;
-+		g_captureMs = 0.0;
-+	}
++	g_snapMs += (time_now_d() - start) * 1000.0;
++	g_snaps++;
 +	if (!g_haveCur) {
 +		std::swap(g_cur, g_next);
 +		g_haveCur = true;
 +		return;
 +	}
++	g_curId++;  // (the pictures from here on come after this one)
++	g_pending = true;
 +	g_worker = std::thread([] {
 +		SetCurrentThreadName("M33Rewind");
 +		Encode(g_cur, g_next);
-+		std::swap(g_cur, g_next);
 +	});
 +}
 +
@@ -3414,13 +3748,13 @@ index 0000000..ca143d8
 +	mspace_free(g_space, d.data);
 +	if (ZSTD_isError(r) || r != d.rawSize || r < 4) {
 +		ERROR_LOG(Log::SaveState, "Rewind: a snapshot didn't decompress");
-+		ClearDeltas();
++		ClearHistory();
 +		return false;
 +	}
 +	const u8 *p = g_next.data;
 +	const size_t oldSize = Get32(p);
 +	if (oldSize > kSnapshotCap) {
-+		ClearDeltas();
++		ClearHistory();
 +		return false;
 +	}
 +	g_cur.size = oldSize;  // (a grown part is all in the difference: those blocks differed)
@@ -3435,72 +3769,161 @@ index 0000000..ca143d8
 +		memcpy(g_cur.data + off, p + at, n);
 +		at += n;
 +	}
++	g_curId--;
 +	return true;
++}
++
++void TakePicture() {
++	if (!gpu || !g_haveCur)
++		return;
++	const double start = time_now_d();
++	GPUDebugBuffer buf;
++	if (!gpu->GetCurrentFramebuffer(buf, GPU_DBG_FRAMEBUF_DISPLAY, 1))
++		return;
++	u8 *temp = nullptr;
++	u32 w = kPicW, h = kPicH;
++	const u8 *rgba = ConvertBufferToScreenshot(buf, true, temp, w, h);
++	if (rgba && w == (u32)kPicW && h == (u32)kPicH) {
++		const u32 stride = temp ? w : buf.GetStride();
++		u16 *dst = (u16 *)g_picRaw;
++		for (u32 y = 0; y < h; y++) {
++			const u8 *src = rgba + (size_t)y * stride * 4;
++			for (u32 x = 0; x < w; x++, src += 4)
++				*dst++ = (u16)(((src[0] >> 3) << 11) | ((src[1] >> 2) << 5) | (src[2] >> 3));
++		}
++		const size_t z = ZSTD_compressCCtx(g_pcctx, g_picZ, kPicCap, g_picRaw, kPicRaw, 1);
++		if (!ZSTD_isError(z)) {
++			if (void *p = Alloc(z)) {
++				memcpy(p, g_picZ, z);
++				g_pics.push_back({ p, (u32)z, g_curId });
++			}
++		}
++	}
++	delete[] temp;
++	g_picMs += (time_now_d() - start) * 1000.0;
++	if (++g_picsTaken == 600) {
++		size_t bytes = 0;
++		for (const Delta &d : g_deltas)
++			bytes += d.size;
++		for (const Pic &p : g_pics)
++			bytes += p.size;
++		NOTICE_LOG(Log::SaveState, "Rewind: snapshot %.1f MiB in %.1f ms, picture in %.1f ms; %.1f s kept (%d snapshots, %d pictures, %.0f MiB)",
++			g_cur.size / (double)MB, g_snaps ? g_snapMs / g_snaps : 0.0, g_picMs / g_picsTaken,
++			g_pics.size() / kPicsPerSecond, (int)g_deltas.size(), (int)g_pics.size(), bytes / (double)MB);
++		g_picsTaken = g_snaps = 0;
++		g_picMs = g_snapMs = 0.0;
++	}
++}
++
++// The picture at g_shown into g_picRgba, for the texture.
++void Unpack(int index) {
++	const Pic &pic = g_pics[index];
++	const size_t r = ZSTD_decompressDCtx(g_dctx, g_picRaw, kPicRaw, pic.data, pic.size);
++	if (ZSTD_isError(r) || r != kPicRaw)
++		return;
++	const u16 *src = (const u16 *)g_picRaw;
++	u32 *dst = (u32 *)g_picRgba;
++	for (int i = 0; i < kPicW * kPicH; i++) {
++		const u16 c = src[i];
++		const u32 r5 = c >> 11, g6 = (c >> 5) & 63, b5 = c & 31;
++		dst[i] = 0xFF000000 | ((b5 * 255 / 31) << 16) | ((g6 * 255 / 63) << 8) | (r5 * 255 / 31);
++	}
++	g_texDirty = true;
++}
++
++// Going back to picture `index`: the snapshots along with it.
++bool Show(int index) {
++	const u32 tag = g_pics[index].tag;
++	while (g_curId > tag) {
++		if (!StepBack())
++			return false;
++	}
++	g_shown = index;
++	Unpack(index);
++	return true;
++}
++
++void Resume() {
++	// Carry on from the snapshot of the picture shown; what's after it is gone.
++	std::string error;
++	const double start = time_now_d();
++	if (SaveState::LoadFromBuffer(g_cur.data, g_cur.size, &error) != CChunkFileReader::ERROR_NONE) {
++		ERROR_LOG(Log::SaveState, "Rewind: loading the snapshot failed (%s)", error.c_str());
++		M33Rewind_Reset();
++		return;
++	}
++	while (!g_pics.empty() && g_pics.back().tag >= g_curId) {
++		mspace_free(g_space, g_pics.back().data);
++		g_pics.pop_back();
++	}
++	NOTICE_LOG(Log::SaveState, "Rewind: went back %d pictures (%.1f s), loaded in %.1f ms; %.1f s left",
++		g_steps, g_steps / kPicsPerSecond, (time_now_d() - start) * 1000.0, g_pics.size() / kPicsPerSecond);
 +}
 +
 +}  // namespace
 +
-+void M33Rewind_Frame(bool held) {
++bool M33Rewind_Frame(bool held) {
 +	// A savestate load like any other: not in hardcore mode.
 +	if (Achievements::HardcoreModeActive() || !Init()) {
 +		g_active = false;
-+		return;
++		return false;
 +	}
 +	auto sy = GetI18NCategory(I18NCat::SYSTEM);
-+	if (held && g_haveCur) {
-+		const double now = time_now_d();
++	const double now = time_now_d();
++	if (held && (g_rewinding || !g_pics.empty())) {
 +		if (!g_rewinding) {
-+			// First the newest snapshot (a few frames back), then older ones at kSpeed, by the clock
-+			// (a frame going back costs a snapshot load, so counting frames would crawl).
 +			Join();
 +			g_rewinding = true;
 +			g_active = true;
-+			g_stepClock = now;
++			g_heldSince = g_lastStep = now;
++			g_owed = 0.0;
 +			g_steps = 0;
 +			g_endShown = false;
++			if (!Show((int)g_pics.size() - 1)) {
++				g_rewinding = false;
++				g_active = false;
++				return false;
++			}
 +		} else {
-+			const double stepSeconds = kInterval / 60.0 / kSpeed;
-+			int owed = std::min(kMaxStepsPerFrame, (int)((now - g_stepClock) / stepSeconds));
-+			if (owed > 0)
-+				g_stepClock = std::max(g_stepClock + owed * stepSeconds, now - stepSeconds);
-+			bool atEnd = false;
-+			for (; owed > 0 && !atEnd; owed--) {
-+				if (StepBack())
-+					g_steps++;
-+				else
-+					atEnd = true;
++			// 1x, then up to 3x after a second held
++			const double speed = 1.0 + std::clamp(now - g_heldSince - 1.0, 0.0, 2.0);
++			g_owed += (now - g_lastStep) * kPicsPerSecond * speed;
++			g_lastStep = now;
++			const int steps = std::min((int)g_owed, 8);
++			g_owed -= (int)g_owed;
++			if (steps > 0) {
++				const int target = std::max(0, g_shown - steps);
++				bool ok = target < g_shown && Show(target);
++				if (ok)
++					g_steps += steps;
++				if ((!ok || target == 0) && !g_endShown) {
++					g_endShown = true;
++					g_OSD.Show(OSDType::MESSAGE_INFO, sy->T("Reached the end of the rewind buffer"), 2.0f, "m33-rewind-end");
++				}
 +			}
-+			if (atEnd && !g_endShown) {
-+				g_endShown = true;
-+				g_OSD.Show(OSDType::MESSAGE_INFO, sy->T("Reached the end of the rewind buffer"), 2.0f, "m33-rewind-end");
-+			}
-+		}
-+		std::string error;
-+		const double loadStart = time_now_d();
-+		const CChunkFileReader::Error loaded = SaveState::LoadFromBuffer(g_cur.data, g_cur.size, &error);
-+		g_loadMs += (time_now_d() - loadStart) * 1000.0;
-+		g_loads++;
-+		if (loaded != CChunkFileReader::ERROR_NONE) {
-+			ERROR_LOG(Log::SaveState, "Rewind: loading a snapshot failed (%s)", error.c_str());
-+			M33Rewind_Reset();
-+			return;
 +		}
 +		g_OSD.Show(OSDType::MESSAGE_INFO, "\xE2\x97\x80\xE2\x97\x80  " + std::string(sy->T("Rewind")), 0.3f, "m33-rewind");
-+		return;
++		return true;
 +	}
 +	if (g_rewinding) {
-+		NOTICE_LOG(Log::SaveState, "Rewind: went back %d snapshots (%.1f s), %d left; a load took %.1f ms",
-+			g_steps, g_steps * kInterval / 60.0, (int)g_deltas.size(), g_loads ? g_loadMs / g_loads : 0.0);
-+		g_loads = 0;
-+		g_loadMs = 0.0;
-+		// Carry on from the snapshot shown; the next one is taken from there.
 +		g_rewinding = false;
 +		g_active = false;
-+		g_frames = 0;
++		Resume();
++		g_snapFrames = g_picFrames = 0;
 +	}
-+	if (++g_frames >= kInterval) {
-+		g_frames = 0;
-+		Capture();
++	if (++g_snapFrames >= kSnapInterval) {
++		g_snapFrames = 0;
++		Snapshot();
++	}
++	return false;
++}
++
++void M33Rewind_AfterFrame() {
++	if (!g_ready || g_rewinding)
++		return;
++	if (++g_picFrames >= kPicInterval) {
++		g_picFrames = 0;
++		TakePicture();
 +	}
 +}
 +
@@ -3508,23 +3931,67 @@ index 0000000..ca143d8
 +	return g_active;
 +}
 +
++void M33Rewind_Draw(UIContext &dc, const Bounds &bounds) {
++	if (!g_active || g_shown < 0)
++		return;
++	Draw::DrawContext *draw = dc.GetDrawContext();
++	if (!g_tex) {
++		Draw::TextureDesc desc{};
++		desc.type = Draw::TextureType::LINEAR2D;
++		desc.format = Draw::DataFormat::R8G8B8A8_UNORM;
++		desc.width = kPicW;
++		desc.height = kPicH;
++		desc.depth = 1;
++		desc.mipLevels = 1;
++		desc.tag = "M33Rewind";
++		desc.initData.push_back(g_picRgba);
++		g_tex = draw->CreateTexture(desc);
++		g_texDirty = false;
++		if (!g_tex)
++			return;
++	}
++	if (g_texDirty) {
++		const uint8_t *levels[1] = { g_picRgba };
++		draw->UpdateTextureLevels(g_tex, levels, Draw::TextureCallback(), 1);
++		g_texDirty = false;
++	}
++	// where the game's picture is: the PSP's screen, letterboxed
++	const float s = std::min(bounds.w / kPicW, bounds.h / kPicH);
++	const Bounds pic(bounds.centerX() - kPicW * s / 2.0f, bounds.centerY() - kPicH * s / 2.0f, kPicW * s, kPicH * s);
++	dc.Begin();
++	dc.Draw()->Rect(bounds.x, bounds.y, bounds.w, bounds.h, 0xFF000000);
++	dc.Flush();
++	draw->BindTexture(0, g_tex);
++	dc.Draw()->DrawTexRect(pic, 0, 0, 1, 1, 0xFFFFFFFF);
++	dc.Flush();
++	dc.RebindTexture();
++}
++
 +void M33Rewind_Reset() {
-+	Join();
-+	if (g_space)
-+		ClearDeltas();
-+	g_cur.size = 0;
-+	g_next.size = 0;
++	if (!g_ready)
++		return;
++	if (g_worker.joinable())
++		g_worker.join();
++	g_pending = false;
++	ClearHistory();
++	g_cur.size = g_next.size = 0;
++	g_curId = 0;
 +	g_haveCur = false;
 +	g_rewinding = false;
 +	g_active = false;
-+	g_frames = 0;
++	g_shown = -1;
++	g_snapFrames = g_picFrames = 0;
++	if (g_tex) {
++		g_tex->Release();
++		g_tex = nullptr;
++	}
 +}
 diff --git a/ps4/PS4Rewind.h b/ps4/PS4Rewind.h
 new file mode 100644
-index 0000000..2357597
+index 0000000..b65a84e
 --- /dev/null
 +++ b/ps4/PS4Rewind.h
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,32 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3543,11 +4010,19 @@ index 0000000..2357597
 +
 +#pragma once
 +
-+// Once per frame, just before the emulator runs it: takes the snapshots, or, while held, goes back.
-+void M33Rewind_Frame(bool held);
-+// Whether it's going back right now (the sound is muted then).
++class UIContext;
++struct Bounds;
++
++// Once per frame, before the emulator runs it: takes the snapshots, or, while L2 is held, goes
++// back. True while going back: the emulator doesn't run then (the recorded pictures play).
++bool M33Rewind_Frame(bool held);
++// After a frame ran: records its picture.
++void M33Rewind_AfterFrame();
++// Whether it's going back right now (the sound is muted, the picture is M33Rewind_Draw's).
 +bool M33Rewind_Active();
-+// Drops every snapshot (a game starting or ending).
++// The picture going back, over the game's.
++void M33Rewind_Draw(UIContext &dc, const Bounds &bounds);
++// Drops everything recorded (a game starting or ending).
 +void M33Rewind_Reset();
 diff --git a/ps4/PS4StartupClip.cpp b/ps4/PS4StartupClip.cpp
 new file mode 100644

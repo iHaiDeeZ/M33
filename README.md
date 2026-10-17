@@ -28,12 +28,12 @@ Status: **v00.01 builds and packages; not yet tested on a console.**
   (Stock PPSSPP renders at 1x under an upscaling filter, ignoring the rendering resolution; M33
   keeps the chosen resolution and FSR upscales from it.)
 - Rewind (`ps4/PS4Rewind.cpp`), as RetroArch's: hold L2 and the game plays backwards, let go and it
-  carries on, at twice the speed it was played (by the clock, not frames: a frame going back costs a
-  snapshot load). A snapshot every 6 frames; only the newest is whole, the older ones are compressed
-  differences (2 KB blocks, zstd). All of it, the whole snapshots included, is in one block of
-  direct memory of its own (up to 448 MiB), never the app heap: reallocating 40 MB buffers there
-  fragmented it into a bad_alloc crash (v00.18). The boot trace logs the heap's use once a minute.
-  Off in RetroAchievements hardcore mode.
+  carries on from the picture shown; hold again to go further back. While playing it records a
+  snapshot every 6 frames (only the newest whole, the older ones as zstd-compressed 2 KB-block
+  differences) and the screen every 2 frames (480x272 RGB565, zstd). Going back pauses the
+  emulator and plays those pictures backwards (1x, up to 3x held), walking the snapshots back with
+  them; letting go loads one snapshot. All of it in its own block of direct memory (up to 640 MiB),
+  never the app heap. Off in RetroAchievements hardcore mode.
 - Video and audio decoding: FFmpeg 7.1 (the rpcs3 port's PS4 build: H.264, ATRAC3/3+, MP3, AAC).
 - UI: PPSSPP's own (controller friendly, device type TV), in the console's language. Text fields
   open the PS4's keyboard (`ps4/PS4Keyboard.cpp`, from Resonance; Cross confirms: param.sfo
@@ -110,6 +110,9 @@ and they go away with their disc.
 Game boot: with a firmware installed, every game (from the XMB or M33's browser) starts with the
 PSP's own game boot animation and sound, as on a PSP (`flash0:/vsh/resource/gameboot.pmf`,
 played by `ps4/PS4GameBoot.cpp`; the ATRAC3+ sound goes through PPSSPP's decoder).
+The video is only the background (it ends plain white); the PSP logo over it is the firmware's own
+image, `tex_psp_logo` in `opening_plugin.rco`, read the same way: the RCO's tree and images are
+LZRC ("RLZ") compressed, decoded with PPSSPP's own `lzrc_decompress`, and the image is a GIM.
 
 Known gap: the XMB's Saved Data column doesn't open yet. The firmware reads the memory stick
 through its raw partition device (`msstor0p1:`) and a `fatms0:` devctl (0x02425856), neither
