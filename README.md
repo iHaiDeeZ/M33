@@ -23,8 +23,8 @@ Status: **v00.01 builds and packages; not yet tested on a console.**
   Settings > Controls.
 - Audio: sceAudioOut, 48 kHz (PPSSPP's mixer resamples).
 - Picture: renders at 4x (1920x1088, the TV's 1080p) with AMD FidelityFX's RCAS sharpening by
-  default; for lower resolutions, add FSR-EASU (the upscaler) in Settings > Graphics >
-  Postprocessing shaders.
+  default; for lower resolutions, add FSR-EASU (the upscaler) in Settings > Graphics > Display layout &
+  effects > Postprocessing shaders.
   (Stock PPSSPP renders at 1x under an upscaling filter, ignoring the rendering resolution; M33
   keeps the chosen resolution and FSR upscales from it.)
 - Rewind (`ps4/PS4Rewind.cpp`), as RetroArch's: hold L2 and the game plays backwards, let go and it
