@@ -476,10 +476,18 @@ index 93654cf..fe1e1a9 100644
  	// Use gameID_EmulatedTimestamp for filename
  	std::string discID = g_paramSFO.GetDiscID();
 diff --git a/Core/Config.cpp b/Core/Config.cpp
-index a15dc9e..dd2b9cc 100644
+index a15dc9e..fdad219 100644
 --- a/Core/Config.cpp
 +++ b/Core/Config.cpp
-@@ -1150,7 +1150,12 @@ static const ConfigSetting upgradeSettings[] = {
+@@ -328,6 +328,7 @@ static const ConfigSetting generalSettings[] = {
+ 	ConfigSetting("CompressSymbols", SETTING(g_Config, bCompressSymbols), true, CfgFlag::DEFAULT),
+ 	ConfigSetting("CacheFullIsoInRam", SETTING(g_Config, bCacheFullIsoInRam), false, CfgFlag::PER_GAME),
+ 	ConfigSetting("AutoUpgradeFirmware", SETTING(g_Config, bAutoUpgradeFirmware), true, CfgFlag::DEFAULT),
++	ConfigSetting("StartInXMB", SETTING(g_Config, bStartInXMB), false, CfgFlag::DEFAULT),
+ 	ConfigSetting("RemoteISOPort", SETTING(g_Config, iRemoteISOPort), 0, CfgFlag::DEFAULT),
+ 	ConfigSetting("LastRemoteISOServer", SETTING(g_Config, sLastRemoteISOServer), "", CfgFlag::DEFAULT),
+ 	ConfigSetting("LastRemoteISOPort", SETTING(g_Config, iLastRemoteISOPort), 0, CfgFlag::DEFAULT),
+@@ -1150,7 +1151,12 @@ static const ConfigSetting upgradeSettings[] = {
  };
  
  static const ConfigSetting themeSettings[] = {
@@ -492,6 +500,18 @@ index a15dc9e..dd2b9cc 100644
  };
  
  static const ConfigSetting vrSettings[] = {
+diff --git a/Core/Config.h b/Core/Config.h
+index 3adb876..0b9e22e 100644
+--- a/Core/Config.h
++++ b/Core/Config.h
+@@ -253,6 +253,7 @@ struct Config : public ConfigBlock {
+ 	bool bCompressSymbols;
+ 	bool bCacheFullIsoInRam;
+ 	bool bAutoUpgradeFirmware;
++	bool bStartInXMB;  // M33 (PS4): boot the installed firmware's XMB at startup
+ 	int iRemoteISOPort; // Also used for serving a local remote debugger.
+ 	std::string sLastRemoteISOServer;
+ 	int iLastRemoteISOPort;
 diff --git a/Core/HLE/sceMpeg.cpp b/Core/HLE/sceMpeg.cpp
 index 53b7fb3..2d8daad 100644
 --- a/Core/HLE/sceMpeg.cpp
@@ -589,6 +609,24 @@ index df985bc..5bf2ed4 100644
  }
  
  void UIBackgroundShutdown() {
+diff --git a/UI/FirmwareScreen.cpp b/UI/FirmwareScreen.cpp
+index 444036b..68a859c 100644
+--- a/UI/FirmwareScreen.cpp
++++ b/UI/FirmwareScreen.cpp
+@@ -118,6 +118,13 @@ void FirmwareScreen::CreateSettingsViews(UI::ViewGroup *parent) {
+ 		LaunchVSH();
+ 	});
+ 	launch->SetEnabled(!gameRunning && info_.hasVsh && FirmwareVersionSupportsVSH(info_.version));
++#if PPSSPP_PLATFORM(PS4)
++	// M33: straight into the XMB after the opening; exiting it comes back to the menus. Holding L1
++	// while the app starts skips it (ps4/PS4Main.cpp).
++	CheckBox *startInXmb = parent->Add(new CheckBox(&g_Config.bStartInXMB, sy->T("Start in the XMB"),
++		sy->T("StartInXMBDesc", "Hold L1 while M33 starts to skip it")));
++	startInXmb->SetEnabled(info_.hasVsh && FirmwareVersionSupportsVSH(info_.version));
++#endif
+ 
+ 	if (info_.hasVsh && !FirmwareVersionSupportsVSH(info_.version)) {
+ 		parent->Add(new NoticeView(NoticeLevel::WARN, sy->T("XMB unsupported"),
 diff --git a/UI/MainScreen.cpp b/UI/MainScreen.cpp
 index 03d80c5..99e25b5 100644
 --- a/UI/MainScreen.cpp
@@ -700,10 +738,16 @@ index 6cd4394..66cebf2 100644
  	} else {
  		snprintf(temp, sizeof(temp), "PPSSPP %s", PPSSPP_GIT_VERSION);
 diff --git a/UI/NativeApp.cpp b/UI/NativeApp.cpp
-index 806051b..3e03734 100644
+index 806051b..30b18f8 100644
 --- a/UI/NativeApp.cpp
 +++ b/UI/NativeApp.cpp
-@@ -409,7 +409,11 @@ Path boot_filename;
+@@ -406,10 +406,17 @@ std::thread *graphicsLoadThread;
+ 
+ // globals
+ Path boot_filename;
++#if PPSSPP_PLATFORM(PS4)
++extern bool m33_skip_xmb;  // ps4/PS4Main.cpp: L1 held at launch
++#endif
  
  // This is called before NativeInit so we do a little bit of initialization here.
  void NativeGetAppInfo(std::string *app_dir_name, std::string *app_nice_name, bool *landscape, std::string *version) {
@@ -715,7 +759,7 @@ index 806051b..3e03734 100644
  	*app_dir_name = "ppsspp";
  	*landscape = true;
  	*version = PPSSPP_GIT_VERSION;
-@@ -539,10 +543,14 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
+@@ -539,10 +546,14 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
  	// Packed assets are included in app
  	g_VFS.Register("", new DirectoryReader(Path(external_dir)));
  #endif
@@ -732,7 +776,7 @@ index 806051b..3e03734 100644
  	g_VFS.Register("", new DirectoryReader(File::GetExeDirectory() / "assets"));
  	g_VFS.Register("", new DirectoryReader(File::GetExeDirectory()));
  	g_VFS.Register("", new DirectoryReader(Path("/usr/local/share/ppsspp/assets")));
-@@ -646,6 +654,11 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
+@@ -646,6 +657,11 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
  	g_Config.memStickDirectory = DarwinFileSystemServices::appropriateMemoryStickDirectoryToUse();
  #elif PPSSPP_PLATFORM(SWITCH)
  	g_Config.memStickDirectory = g_Config.internalDataDirectory / "config/ppsspp";
@@ -744,6 +788,22 @@ index 806051b..3e03734 100644
  #elif PPSSPP_PLATFORM(WINDOWS)
  	// ...
  #else
+@@ -695,6 +711,15 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
+ 	if (boot_filename.empty() && cmdLineOptions.bootVSH.value_or(false)) {
+ 		boot_filename = g_Config.nandRootDirectory / "flash0/vsh/module/vshmain.prx";
+ 	}
++#if PPSSPP_PLATFORM(PS4)
++	// M33: the XMB at startup when asked for (Settings > PSP Firmware), unless L1 was held.
++	if (boot_filename.empty() && g_Config.bStartInXMB && !m33_skip_xmb) {
++		const Path vsh = g_Config.nandRootDirectory / "flash0/vsh/module/vshmain.prx";
++		if (File::Exists(vsh)) {
++			boot_filename = vsh;
++		}
++	}
++#endif
+ 
+ 	if (cmdLineOptions.appendConfig.has_value()) {
+ 		g_Config.SetAppendedConfigIni(Path(cmdLineOptions.appendConfig.value()));
 diff --git a/UI/UIAtlas.cpp b/UI/UIAtlas.cpp
 index 3430114..5b1349b 100644
 --- a/UI/UIAtlas.cpp
@@ -1270,10 +1330,10 @@ index 0000000..4d3ddea
 +void M33_DrawIntro(UIContext &dc, const Bounds &bounds, double t);
 diff --git a/ps4/PS4Main.cpp b/ps4/PS4Main.cpp
 new file mode 100644
-index 0000000..fb636ac
+index 0000000..821d1da
 --- /dev/null
 +++ b/ps4/PS4Main.cpp
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,364 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -1342,9 +1402,13 @@ index 0000000..fb636ac
 +#include <orbis/Sysmodule.h>
 +#include <orbis/SystemService.h>
 +#include <orbis/UserService.h>
++#include <orbis/Pad.h>
 +
 +extern "C" void ps4_boot_trace(const char *line);  // port/ps4_crashlog.cpp
 +extern "C" void ps4_sampler_start();                // port/ps4_sampler.cpp
++
++// L1 held while the app starts: no XMB this time, even with Start in the XMB on (UI/NativeApp.cpp).
++bool m33_skip_xmb = false;
 +
 +namespace {
 +
@@ -1403,6 +1467,21 @@ index 0000000..fb636ac
 +	return kLanguages[lang];
 +}
 +
++// Whether the first user is holding L1 right now (read once, before the pads are set up).
++bool L1HeldAtLaunch() {
++	int32_t user = -1;
++	if (sceUserServiceGetInitialUser(&user) != 0 || user < 0)
++		return false;
++	scePadInit();
++	const int handle = scePadOpen(user, ORBIS_PAD_PORT_TYPE_STANDARD, 0, nullptr);
++	if (handle < 0)
++		return false;
++	OrbisPadData data{};
++	const bool held = scePadReadState(handle, &data) == 0 && data.connected && (data.buttons & ORBIS_PAD_BUTTON_L1);
++	scePadClose(handle);
++	return held;
++}
++
 +}  // namespace
 +
 +int main(int argc, char *argv[]) {
@@ -1414,6 +1493,9 @@ index 0000000..fb636ac
 +		ps4_sampler_start();
 +
 +	sceUserServiceInitialize(nullptr);
++	m33_skip_xmb = L1HeldAtLaunch();
++	if (m33_skip_xmb)
++		Trace("L1 held: not starting in the XMB");
 +	TimeInit();
 +
 +	// No command line on the console (argv[0] is the eboot).

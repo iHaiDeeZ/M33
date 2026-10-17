@@ -73,6 +73,18 @@ The PS4 runtime in `port/` (heap, crash and hang logs, profiler, DNS, network sh
 winsys) and `toolchain/` come from Resonance; `port/ps4_net.cpp` defines `gethostbyname` itself
 (PPSSPP's adhoc server uses it, and the C library's version imports a function the console lacks).
 
+## The PSP's XMB
+
+PPSSPP (1.21 on) can boot the real XMB from an installed PSP firmware (any of 1.50 to 6.61):
+Settings > System > PSP Firmware > Launch XMB. M33 adds **Start in the XMB** there: the app goes
+straight into it after its opening, and leaving it (or L3 + R3 > Exit to menu) comes back to M33's
+menus. Hold **L1** while M33 starts to skip it once.
+
+Installing a firmware (Sony's files, not included): open a game's info screen and choose Install
+PSP firmware update (most discs carry an updater; Settings also offers to do it from discs by
+itself), or put an official update's `EBOOT.PBP` in a folder under `/data/March33/games` and select
+it in the game browser. It is installed to `/data/March33/PSP/NAND`.
+
 ## Branding
 
 - Home screen tile and background (`sce_sys/icon0.png`, `pic1.png`) and the in-app icon
