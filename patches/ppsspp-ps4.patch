@@ -510,7 +510,7 @@ index 93654cf..fe1e1a9 100644
  	// Use gameID_EmulatedTimestamp for filename
  	std::string discID = g_paramSFO.GetDiscID();
 diff --git a/Core/Config.cpp b/Core/Config.cpp
-index a15dc9e..fdad219 100644
+index a15dc9e..73b2f86 100644
 --- a/Core/Config.cpp
 +++ b/Core/Config.cpp
 @@ -328,6 +328,7 @@ static const ConfigSetting generalSettings[] = {
@@ -521,7 +521,17 @@ index a15dc9e..fdad219 100644
  	ConfigSetting("RemoteISOPort", SETTING(g_Config, iRemoteISOPort), 0, CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOServer", SETTING(g_Config, sLastRemoteISOServer), "", CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOPort", SETTING(g_Config, iLastRemoteISOPort), 0, CfgFlag::DEFAULT),
-@@ -1150,7 +1151,12 @@ static const ConfigSetting upgradeSettings[] = {
+@@ -455,6 +456,9 @@ static int DefaultInternalResolution() {
+ 	return scale;
+ #elif PPSSPP_PLATFORM(IOS)
+ 	return 2;
++#elif PPSSPP_PLATFORM(PS4)
++	// M33: 2x (960x544), which FSR then takes to the TV's 1080p (the default post-processing below)
++	return 2;
+ #else
+ 	return 0;
+ #endif
+@@ -1150,7 +1154,12 @@ static const ConfigSetting upgradeSettings[] = {
  };
  
  static const ConfigSetting themeSettings[] = {
@@ -534,6 +544,21 @@ index a15dc9e..fdad219 100644
  };
  
  static const ConfigSetting vrSettings[] = {
+@@ -1403,6 +1412,14 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
+ 	bool postShadersInitialized = iniFile.HasSection("PostShaderList");
+ 	Section *postShaderChain = iniFile.GetOrCreateSection("PostShaderList");
+ 	Section *postShaderSetting = iniFile.GetOrCreateSection("PostShaderSetting");
++#if PPSSPP_PLATFORM(PS4)
++	// M33: AMD FidelityFX Super Resolution by default - EASU upscales the 2x picture to the
++	// screen, RCAS sharpens it. Only on a fresh ini: a chain the user set (or emptied) stays.
++	if (!postShadersInitialized) {
++		postShaderChain->Set("PostShader1", "FSR-EASU");
++		postShaderChain->Set("PostShader2", "FSR-RCAS");
++	}
++#endif
+ 	if (IsVREnabled() && !postShadersInitialized) {
+ 		postShaderChain->Set("PostShader1", "ColorCorrection");
+ 		postShaderSetting->Set("ColorCorrectionSettingCurrentValue1", 1.0f);
 diff --git a/Core/Config.h b/Core/Config.h
 index 3adb876..0b9e22e 100644
 --- a/Core/Config.h
@@ -1974,10 +1999,10 @@ index 0000000..4cd600c
 +}  // namespace PS4Keyboard
 diff --git a/ps4/PS4Main.cpp b/ps4/PS4Main.cpp
 new file mode 100644
-index 0000000..e7f3d53
+index 0000000..6a6102d
 --- /dev/null
 +++ b/ps4/PS4Main.cpp
-@@ -0,0 +1,375 @@
+@@ -0,0 +1,387 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -2162,6 +2187,18 @@ index 0000000..e7f3d53
 +	g_Config.bFullScreen = true;
 +	if (g_Config.sLanguageIni.empty())
 +		g_Config.sLanguageIni = ConsoleLanguage();
++	// FSR (2x, upscaled to the screen by FSR-EASU, sharpened by FSR-RCAS) is the default on a fresh
++	// ini (Core/Config.cpp). Setups from before it get it once too, where nothing else was chosen.
++	const std::string fsrMarker = std::string(kDataRoot) + "/.fsr-default";
++	if (access(fsrMarker.c_str(), F_OK) != 0) {
++		if (g_Config.vPostShaderNames.empty())
++			g_Config.vPostShaderNames = { "FSR-EASU", "FSR-RCAS" };
++		if (g_Config.iInternalResolution == 0)
++			g_Config.iInternalResolution = 2;
++		if (FILE *f = fopen(fsrMarker.c_str(), "w"))
++			fclose(f);
++		Trace("FSR set up as the default (2x + FSR-EASU + FSR-RCAS)");
++	}
 +	Native_UpdateScreenScale(ps4wsi::kWidth, ps4wsi::kHeight, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor));
 +
 +	Trace("graphics");

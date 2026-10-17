@@ -22,6 +22,8 @@ Status: **v00.01 builds and packages; not yet tested on a console.**
   touchpad click = SELECT, **L3 + R3 (or L2) = the in-game menu**, R2 = fast-forward. Everything is remappable in
   Settings > Controls.
 - Audio: sceAudioOut, 48 kHz (PPSSPP's mixer resamples).
+- Picture: renders at 2x (960x544) and upscales to 1080p with AMD FidelityFX Super Resolution
+  (PPSSPP's FSR-EASU, then FSR-RCAS sharpening) by default; Settings > Graphics changes both.
 - Video and audio decoding: FFmpeg 7.1 (the rpcs3 port's PS4 build: H.264, ATRAC3/3+, MP3, AAC).
 - UI: PPSSPP's own (controller friendly, device type TV), in the console's language. Text fields
   open the PS4's keyboard (`ps4/PS4Keyboard.cpp`, from Resonance; Cross confirms: param.sfo
