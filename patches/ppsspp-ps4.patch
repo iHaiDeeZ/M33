@@ -625,6 +625,20 @@ index 813e3d4..04411ac 100644
  	AVCodecContext  *codecCtx_ = nullptr;
  	SwrContext      *swrCtx_ = nullptr;
  
+diff --git a/Core/PSPLoaders.cpp b/Core/PSPLoaders.cpp
+index 4b9f88d..f53b3aa 100644
+--- a/Core/PSPLoaders.cpp
++++ b/Core/PSPLoaders.cpp
+@@ -537,6 +537,9 @@ bool Load_PSP_ELF_PBP(FileLoader *fileLoader, std::string_view discId, bool load
+ 
+ 			pspFileSystem.Mount("umd1:", blockSystem);
+ 			pspFileSystem.Mount("disc0:", umd2);
++#if PPSSPP_PLATFORM(PS4)
++			pspFileSystem.Mount("umd0:", blockSystem);  // M33: the XMB's disc drive
++#endif
+ 			pspFileSystem.Mount("umd:", blockSystem);
+ 		} else {
+ 			ERROR_LOG(Log::Loader, "mountIso failed: %s", error_string->c_str());
 diff --git a/UI/Background.cpp b/UI/Background.cpp
 index df985bc..5bf2ed4 100644
 --- a/UI/Background.cpp
@@ -643,6 +657,40 @@ index df985bc..5bf2ed4 100644
  }
  
  void UIBackgroundShutdown() {
+diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
+index e1a8d56..b7c2cc6 100644
+--- a/UI/EmuScreen.cpp
++++ b/UI/EmuScreen.cpp
+@@ -60,6 +60,7 @@ using namespace std::placeholders;
+ #include "Core/MemFault.h"
+ #include "Core/Reporting.h"
+ #include "Core/Util/PathUtil.h"
++#include "Core/Util/RecentFiles.h"
+ #include "Core/System.h"
+ #include "GPU/Common/PresentationCommon.h"
+ #include "GPU/GPUState.h"
+@@ -318,6 +319,21 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+ 	coreParam.enableSound = g_Config.bEnableSound;
+ 	coreParam.fileToStart = filename;
+ 	coreParam.mountIso.clear();
++#if PPSSPP_PLATFORM(PS4)
++	// M33: booting the XMB, the last disc game played is in its UMD drive (a real PSP's XMB lists
++	// the disc and the memory stick's PSP/GAME, never loose ISO files).
++	if (filename.GetFilename() == "vshmain.prx") {
++		for (const std::string &recent : g_recentFiles.GetRecentFiles()) {
++			const Path disc(recent);
++			const std::string ext = disc.GetFileExtension();
++			if ((ext == ".iso" || ext == ".cso" || ext == ".chd") && File::Exists(disc)) {
++				coreParam.mountIso = disc;
++				INFO_LOG(Log::Loader, "XMB: %s is in the disc drive", disc.c_str());
++				break;
++			}
++		}
++	}
++#endif
+ 	coreParam.mountRoot = g_Config.mountRoot;
+ 	coreParam.startBreak = !g_Config.bAutoRun;
+ 	coreParam.headLess = false;
 diff --git a/UI/FirmwareScreen.cpp b/UI/FirmwareScreen.cpp
 index 444036b..a3d9cc8 100644
 --- a/UI/FirmwareScreen.cpp
@@ -1687,10 +1735,10 @@ index 0000000..870978a
 +void M33_EndIntro();
 diff --git a/ps4/PS4Keyboard.cpp b/ps4/PS4Keyboard.cpp
 new file mode 100644
-index 0000000..98ef5c0
+index 0000000..220e547
 --- /dev/null
 +++ b/ps4/PS4Keyboard.cpp
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,197 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -1807,22 +1855,48 @@ index 0000000..98ef5c0
 +	ToUtf16(title, g_title, sizeof(g_title) / sizeof(g_title[0]));
 +	int32_t user = -1;
 +	sceUserServiceGetInitialUser(&user);
-+	OrbisImeDialogSetting setting{};
-+	setting.userId = (uint32_t)user;
-+	setting.type = ORBIS_TYPE_DEFAULT;
-+	setting.enterLabel = ORBIS_BUTTON_LABEL_DEFAULT;
-+	setting.option = OPTION_NO_AUTO_CAPITALIZATION | (password ? OPTION_PASSWORD : 0);
-+	setting.maxTextLength = (uint32_t)(sizeof(g_text) / sizeof(g_text[0])) - 2;
-+	setting.inputTextBuffer = reinterpret_cast<wchar_t *>(g_text);
-+	setting.posx = 1920.f / 2;
-+	setting.posy = 1080.f / 2;
-+	setting.horizontalAlignment = ORBIS_H_CENTER;
-+	setting.verticalAlignment = ORBIS_V_CENTER;
-+	setting.title = reinterpret_cast<const wchar_t *>(g_title);
-+	const int r = sceImeDialogInit(&setting, nullptr);
-+	char line[96];
-+	snprintf(line, sizeof(line), "keyboard: open %x", (unsigned)r);
-+	ps4_boot_trace(line);
++	// Password mode is refused with the default input type (80bc0030): basic Latin, and a
++	// password's length. Should the console still refuse, plainer keyboards follow - a keyboard
++	// that shows the password beats none.
++	struct Attempt {
++		OrbisImeType type;
++		uint32_t option;
++		uint32_t maxLength;
++	};
++	const uint32_t fullLength = (uint32_t)(sizeof(g_text) / sizeof(g_text[0])) - 2;
++	const Attempt passwordAttempts[] = {
++		{ ORBIS_TYPE_BASIC_LATIN, OPTION_PASSWORD, 128 },
++		{ ORBIS_TYPE_BASIC_LATIN, OPTION_PASSWORD, 16 },
++		{ ORBIS_TYPE_DEFAULT, OPTION_PASSWORD, 64 },
++		{ ORBIS_TYPE_BASIC_LATIN, OPTION_NO_AUTO_CAPITALIZATION, 128 },
++	};
++	const Attempt textAttempts[] = {
++		{ ORBIS_TYPE_DEFAULT, OPTION_NO_AUTO_CAPITALIZATION, fullLength },
++	};
++	const Attempt *attempts = password ? passwordAttempts : textAttempts;
++	const size_t count = password ? sizeof(passwordAttempts) / sizeof(Attempt) : 1;
++	int r = -1;
++	for (size_t i = 0; i < count; i++) {
++		OrbisImeDialogSetting setting{};
++		setting.userId = (uint32_t)user;
++		setting.type = attempts[i].type;
++		setting.enterLabel = ORBIS_BUTTON_LABEL_DEFAULT;
++		setting.option = attempts[i].option;
++		setting.maxTextLength = attempts[i].maxLength;
++		setting.inputTextBuffer = reinterpret_cast<wchar_t *>(g_text);
++		setting.posx = 1920.f / 2;
++		setting.posy = 1080.f / 2;
++		setting.horizontalAlignment = ORBIS_H_CENTER;
++		setting.verticalAlignment = ORBIS_V_CENTER;
++		setting.title = reinterpret_cast<const wchar_t *>(g_title);
++		r = sceImeDialogInit(&setting, nullptr);
++		char line[128];
++		snprintf(line, sizeof(line), "keyboard: open %x (type %d, option %x, length %u)", (unsigned)r,
++			(int)attempts[i].type, (unsigned)attempts[i].option, (unsigned)attempts[i].maxLength);
++		ps4_boot_trace(line);
++		if (r >= 0)
++			break;
++	}
 +	g_open = r >= 0;
 +	g_requestId = g_open ? requestId : -1;
 +	return g_open;
