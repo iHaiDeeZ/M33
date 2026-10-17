@@ -45,7 +45,7 @@ git -C ~/m33-build/src/ppsspp checkout -b ps4 && git -C ~/m33-build/src/ppsspp a
 scripts/rebuild-ppsspp.sh         # configure + build (logs in ~/m33-build/logs)
 M33_VERSION=00.01 scripts/package-m33.sh
 scripts/save-patch.sh "message"   # commit ~/m33-build/src/ppsspp and refresh patches/ppsspp-ps4.patch
-py scripts/make-art.py            # sce_sys/icon0.png and pic1.png
+py scripts/make-icon.py brand/concepts3d/macro_cut.png brand/concepts3d/macro_wide.png   # sce_sys art, in-app icon
 ```
 
 Run the scripts from WSL through `~/m33` (the space in "PS4 Projects" breaks linker flags).
@@ -72,6 +72,18 @@ The PPSSPP side is `patches/ppsspp-ps4.patch` (26 files):
 The PS4 runtime in `port/` (heap, crash and hang logs, profiler, DNS, network shares, the RADV
 winsys) and `toolchain/` come from Resonance; `port/ps4_net.cpp` defines `gethostbyname` itself
 (PPSSPP's adhoc server uses it, and the C library's version imports a function the console lacks).
+
+## Branding
+
+- Home screen tile and background (`sce_sys/icon0.png`, `pic1.png`) and the in-app icon
+  (`assets/ui_images/icon.png`): a PSP-1000-style handheld modelled and rendered in Blender 4.5
+  (`scripts/blender/psp_scene.py`, no Sony assets or logos), composed by `scripts/make-icon.py`.
+  Re-render: `~/tools/blender-4.5.14-linux-x64/blender -b -P scripts/blender/psp_scene.py -- <out> brand/intro-still.png art/Michroma-Regular.ttf 256 1024 macro_cut macro_wide`
+- In the app: the opening animation (`ps4/PS4Brand.cpp`), the M33 logo and intro lettering as
+  vectors in the UI atlas (`scripts/make-brand.py` -> `brand/m33-ui.svg`, merged by
+  `scripts/brand-stage.py` when packaging), the March33 theme (`assets/themes/march33.ini`), the
+  menus' background (`assets/m33_background.jpg`) and "M33" in the menu texts (PPSSPP keeps its
+  credit in the About screen and the opening). `tools/` previews the atlas images and the opening.
 
 ## Not yet
 

@@ -3,7 +3,7 @@
 
 - brand/m33-ui.svg: vector images for PPSSPP's UI atlas (assets/ui_images/images.svg), merged in
   by scripts/brand-stage.py when packaging: I_LOGO (the M33 wordmark next to the icon on the main
-  screen), I_ICON (the app badge), and the intro's I_M33_INTRO (big wordmark), I_M33_MARCH
+  screen) and the intro's I_M33_INTRO (big wordmark), I_M33_MARCH
   ("MARCH33") and I_M33_TAGLINE. Letters are glyph outlines (nanosvg has no text), white, so the
   app can tint them; the icon carries its own colors.
 - assets/m33_background.jpg: the menus' background (the home screen art, without the lettering).
@@ -87,17 +87,7 @@ def ui_svg(font):
         "</defs>",
     ]
 
-    # I_ICON: 19 x 19 units (72 px at 1x, as PPSSPP's icon.png): a rounded badge, the stadium ring
-    # (a PSP's outline) and M33.
-    x0, y0, size = 2.0, BAND_Y + 2.0, 19.0
-    icon = [
-        f'<rect x="{x0}" y="{y0}" width="{size}" height="{size}" rx="4.2" ry="4.2" fill="url(#m33IconBg)"/>',
-        stadium(x0 + 1.5, y0 + 5.3, size - 3.0, 8.4, 0, "url(#m33Ring)", 0.6),
-    ]
-    # Michroma is wide: capitals 3 units tall make M33 about 12 wide, inside the ring
-    letters, _ = font.text("M33", x0 + size / 2, y0 + 5.3 + 4.2 + 1.5, 3.0, track_em=0.03, fill="url(#m33Letters)", center=True)
-    icon += letters
-    parts.append('<g id="I_ICON">' + "".join(icon) + "</g>")
+    # (I_ICON is a PNG: assets/ui_images/icon.png, the rendered handheld, from scripts/make-icon.py)
 
     # I_LOGO: the header wordmark, about PPSSPP's logo's height (41 px = 10.8 units)
     letters, w = font.text("M33", 26.0, BAND_Y + 12.0, 9.0, track_em=0.06, fill="url(#m33Letters)")
@@ -147,31 +137,6 @@ def background():
     return out
 
 
-def preview(font_path):
-    """brand/preview-icon.png: I_ICON as drawn at 4x (a rough PIL rendering, for review)."""
-    from PIL import ImageFont
-    S = 4 * 72
-    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    grad = Image.new("RGBA", (S, S))
-    gp = grad.load()
-    for y in range(S):
-        t = y / (S - 1)
-        c = tuple(int(a + (b - a) * t) for a, b in zip((46, 26, 110), (11, 8, 32)))
-        for x in range(S):
-            gp[x, y] = c + (255,)
-    mask = Image.new("L", (S, S), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, S - 1, S - 1], radius=S * 4.2 / 19, fill=255)
-    img.paste(grad, (0, 0), mask)
-    d = ImageDraw.Draw(img)
-    k = S / 19
-    d.rounded_rectangle([1.6 * k, 5.2 * k, (19 - 1.6) * k, (5.2 + 8.6) * k], radius=4.3 * k, outline=(130, 120, 255), width=int(0.55 * k))
-    f = ImageFont.truetype(font_path, int(5.6 * k))
-    d.text((S / 2, 11.5 * k), "M33", font=f, fill=(244, 246, 255), anchor="ms")
-    out = os.path.join(REPO, "brand", "preview-icon.png")
-    img.save(out)
-    return out
-
-
 if __name__ == "__main__":
     font = Font(FONT)
     os.makedirs(os.path.join(REPO, "brand"), exist_ok=True)
@@ -180,4 +145,3 @@ if __name__ == "__main__":
         f.write(ui_svg(font))
     print("wrote brand/m33-ui.svg")
     print("wrote", os.path.relpath(background(), REPO))
-    print("wrote", os.path.relpath(preview(FONT), REPO))
