@@ -38,6 +38,12 @@ Status: **v00.01 builds and packages; not yet tested on a console.**
 - 60 FPS codes aren't offered as a switch (v00.28-v00.29 had one): GTA ran at ~35-40 fps with
   them (the game in slow motion, its logic tied to frames), and switching them mid-game crashed it.
   They're still in the cheat list for anyone who wants to try.
+- Frame generation (experimental, off by default: Settings > Graphics > Frame Rate Control, or the
+  quick menu): a 30 fps game shown at 60, a frame made between each two in the refresh that would
+  repeat one (GPU/Common/PresentationCommon.cpp). As AMD's frame interpolation without the game's
+  motion vectors (the PSP has none): block motion found by comparing the frames at the PSP's own
+  size, then the frame between them, a plain cross-fade where they don't match. The real frames
+  come one refresh (~16 ms) later; 60 fps games are left alone.
 - Rewind (`ps4/PS4Rewind.cpp`), as RetroArch's: hold L2 and the game plays backwards, let go and it
   carries on from the picture shown; hold again to go further back. While playing it records a
   snapshot every 10 frames, in a frame with time to spare (at the latest every 30; only the newest whole, the older ones as zstd-compressed 2 KB-block
