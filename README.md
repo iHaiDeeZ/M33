@@ -1,182 +1,219 @@
-# M33 (March33)
+<p align="center">
+  <img src="docs/images/banner.jpg" alt="M33, a PSP emulator for PS4" width="100%">
+</p>
 
-By **ShiroKlein** ([@iHaiDeeZ](https://github.com/iHaiDeeZ)) · [github.com/iHaiDeeZ/M33](https://github.com/iHaiDeeZ/M33)
+<p align="center">
+  <a href="https://github.com/iHaiDeeZ/M33/releases/latest"><img alt="Release 1.00" src="https://img.shields.io/badge/release-1.00-9b7bff"></a>
+  <img alt="PS4 homebrew" src="https://img.shields.io/badge/PS4-homebrew-1f5fd6">
+  <img alt="PSP" src="https://img.shields.io/badge/PSP-PPSSPP-48e0ff">
+  <a href="LICENSE"><img alt="GPL-2.0" src="https://img.shields.io/badge/license-GPL--2.0-ff8ad4"></a>
+  <a href="https://discord.gg/fqjMs9gDJh"><img alt="Discord" src="https://img.shields.io/badge/Discord-join-5865f2?logo=discord&logoColor=white"></a>
+</p>
 
-[PPSSPP](https://github.com/hrydgard/ppsspp) (PSP emulator) for jailbroken PS4 homebrew, built in WSL
-Ubuntu with the Resonance / DolphinPS4 / Crema PS4 toolchain (clang 21 + libc++ 21 on OpenOrbis).
+<h3 align="center">Your PSP library, on the PS4.</h3>
 
-Status: **1.00**: runs on the console. PSP games (ISO, CSO, PBP) with the PSP firmware's XMB and
-game boot, a controller-friendly quick menu (L3 + R3) with save-state pictures and cheats, rewind
-(L2), experimental frame generation (30 to 60 FPS), FSR sharpening, RetroAchievements, and the
-PS4's own keyboard. Build it with the steps below; the package bundles nothing of Sony's except
-the startup clip you render yourself (kept out of the repository).
+<p align="center">
+  <a href="https://github.com/iHaiDeeZ/M33/releases/latest"><b>⬇ Get the latest version</b></a> ·
+  <a href="#getting-started">Getting started</a> ·
+  <a href="#controls">Controls</a> ·
+  <a href="#game-compatibility">Compatibility</a> ·
+  <a href="#faq">FAQ</a> ·
+  <a href="https://discord.gg/fqjMs9gDJh">Discord</a>
+</p>
 
-- Graphics: PPSSPP's Vulkan renderer on DolphinPS4's RADV/GNM port. RADV is linked in and has no
-  window system, so `ps4/PS4VulkanWSI.cpp` (Resonance's `ps4_wsi.cpp`) adds `VK_EXT_headless_surface`
-  and `VK_KHR_swapchain` on VideoOut: linear 1920x1080 images registered as VideoOut buffers,
-  flipped GPU-side behind each frame (`ac_ps4_submit_flip`). PPSSPP sees a normal surface
-  (`WINDOWSYSTEM_HEADLESS`) and loads every entry point through it (`VulkanLoader.cpp`). No OpenGL.
-- CPU: PPSSPP's x86-64 JIT. Its code buffer is RWX memory within reach of the eboot's code
-  (`Common/MemoryUtil.cpp`), as Resonance's dynarec.
-- Memory: fast memory over PS4 direct memory with aliasing (`Common/MemArenaPS4.cpp`): one block of
-  direct memory, mapped into a reserved 4 GiB range as often as the PSP mirrors it, in 16 KiB pages.
-  The fault handler reads registers through the PS4's signal context layout (`toolchain/m33-overlay.sh`).
-- Input: DualShock 4 (ScePad), one per signed-in user, with PPSSPP's default pad mapping:
-  Cross/Circle/Square/Triangle, D-pad, left stick, L1/R1 = L/R, OPTIONS = START,
-  touchpad click = SELECT, **L3 + R3 = the in-game menu**, **L2 (hold) = rewind**, R2 = fast-forward. Everything is remappable in
-  Settings > Controls.
-- Audio: sceAudioOut, 48 kHz (PPSSPP's mixer resamples).
-- Picture: renders at 4x (1920x1088, the TV's 1080p) with AMD FidelityFX's RCAS sharpening by
-  default; for lower resolutions, add FSR-EASU (the upscaler) in Settings > Graphics > Display layout &
-  effects > Postprocessing shaders.
-  (Stock PPSSPP renders at 1x under an upscaling filter, ignoring the rendering resolution; M33
-  keeps the chosen resolution and FSR upscales from it.)
-- Quick menu (L3 + R3, `ps4/PS4QuickMenu.cpp`), made for the controller after Crema's in-game menu:
-  the paused game behind a dark panel sliding in from the left, rows with icons and a gliding
-  highlight, values changed with Left / Right. Resume, Save / Load State (by slot; the slot's picture,
-  date and dots for the slots on a card beside the panel, as Resonance's), Rewind (on or off,
-  per game: off spends nothing), Cheats
-  (a page of their own: each on or off, the game's codes fetched from PPSSPP's CWCheat database),
-  Resolution, Game Volume, FPS Counter, Settings (PPSSPP's full settings), Display & Effects,
-  Restart Game, Exit. PPSSPP's own pause screen stays for the XMB.
-- 60 FPS codes aren't offered as a switch (v00.28-v00.29 had one): GTA ran at ~35-40 fps with
-  them (the game in slow motion, its logic tied to frames), and switching them mid-game crashed it.
-  They're still in the cheat list for anyone who wants to try.
-- Frame generation (experimental, off by default: Settings > Graphics > Frame Rate Control, or the
-  quick menu): a 30 fps game shown at 60, a frame made between each two in the refresh that would
-  repeat one (GPU/Common/PresentationCommon.cpp). As AMD's frame interpolation without the game's
-  motion vectors (the PSP has none): block motion found by comparing the frames at the PSP's own
-  size, then the frame between them, a plain cross-fade where they don't match. The real frames
-  come one refresh (~16 ms) later; 60 fps games are left alone.
-- Rewind (`ps4/PS4Rewind.cpp`), as RetroArch's: hold L2 and the game plays backwards, let go and it
-  carries on from the picture shown; hold again to go further back. While playing it records a
-  snapshot every 10 frames, in a frame with time to spare (at the latest every 30; only the newest whole, the older ones as zstd-compressed 2 KB-block
-  differences) and the screen every 2 frames (480x272 RGB565, zstd; blitted down on the GPU and read back a few
-  frames late, so the emulator never waits for the GPU: a blocking readback cost 12-27 ms each and
-  made games like GTA fall behind, their sound with them). Going back pauses the
-  emulator and plays those pictures backwards (1x, up to 3x held), walking the snapshots back with
-  them; letting go loads one snapshot. All of it in its own block of direct memory (up to 640 MiB),
-  never the app heap. Off in RetroAchievements hardcore mode.
-- Video and audio decoding: FFmpeg 7.1 (the rpcs3 port's PS4 build: H.264, ATRAC3/3+, MP3, AAC).
-- UI: PPSSPP's own (controller friendly, device type TV), in the console's language. Text fields
-  open the PS4's keyboard (`ps4/PS4Keyboard.cpp`, from Resonance; Cross confirms: param.sfo
-  ATTRIBUTE 0x2).
-- Network: HTTPS (RetroAchievements) through naett's curl backend on the sysroot's static
-  curl + OpenSSL, with Mozilla's CA bundle in the package (`assets/cacert.pem`). Host names go
-  through libSceNet's resolver (`port/ps4_net.cpp`).
+---
 
-## On the console
+## Overview
 
-| Path | What |
+M33 (March33) brings the [PPSSPP](https://www.ppsspp.org) PSP emulator to jailbroken PS4 consoles
+as an app you launch from the home screen like any other. Pick a game, press **Cross**, and play
+with a DualShock 4. Pressing **L3 + R3** during a game opens a quick menu made for the controller:
+save states with their pictures, cheats, rewind, the picture and sound settings, restart or quit.
+
+With the PSP's own firmware installed (M33 downloads it from Sony for you), the real **XMB** starts
+your games the way a PSP does, with its own game boot animation.
+
+Under the hood, PPSSPP's JIT turns the PSP's MIPS code into x86-64 code for the PS4's CPU, and
+rendering goes through Vulkan: Mesa's RADV driver, adapted to submit work directly to the PS4's AMD
+GPU.
+
+You bring your own game backups. Nothing copyrighted is bundled: no games, no firmware.
+
+## Highlights
+
+**A PSP, as it was**
+- **The XMB**: with PSP firmware 6.61 installed, M33 can start straight into the PSP's own menu.
+  Every disc game in your folder shows up in its Game column. Hold **L1** while M33 opens to skip it.
+- **The game boot**: starting a game plays the firmware's real startup and game boot animation,
+  from the XMB or from M33's own game list.
+- **One button to get the firmware**: *Settings → System → PSP Firmware → Download PSP firmware 6.61
+  from Sony* fetches Sony's own updater and installs it.
+
+**A quick menu made for the couch (L3 + R3)**
+- The paused game behind a panel that slides in, rows with icons, values changed with Left / Right.
+- **Save State / Load State** by slot, with the slot's picture, date and time beside the menu.
+- **Cheats**: turn each one on or off. The game's codes come from PPSSPP's CWCheat database,
+  downloaded the first time.
+- **Rewind**, **Frame Generation**, **Resolution**, **Game Volume** and the **FPS Counter**, applied
+  at once. **Settings** opens all of PPSSPP's settings; **Display & Effects** its picture options.
+
+**Rewind, the way RetroArch does it**
+- Hold **L2** and the game plays backwards; let go and it carries on from there. Hold again to go
+  further back. On or off per game.
+
+**A sharp picture**
+- Rendered at 4x (1920x1088, the TV's 1080p) with AMD FidelityFX's sharpening (FSR RCAS).
+- **Frame Generation** (experimental, off by default): a game running at 30 is shown at 60, with a
+  frame made between every two. Works best in games with a steady 30 fps.
+
+**Everything else you'd expect**
+- **RetroAchievements**, online.
+- The PS4's own keyboard for text, with **Cross** to confirm.
+- A 3D animated startup and M33's own theme, icon and menu sounds.
+
+## Getting started
+
+**You need:** a jailbroken PS4 with **GoldHEN**, an FTP connection to it, and dumps of PSP games
+you own.
+
+1. Grab the latest **`M33-vX.XX.pkg`** from the [releases page](https://github.com/iHaiDeeZ/M33/releases/latest)
+   and install it with GoldHEN's **Package Installer**.
+2. Start **M33** once: it creates **`/data/March33/`**.
+3. Put your games in **`/data/March33/games/`** (`.iso`, `.cso`, `.chd`). Homebrew and PSN games
+   (`EBOOT.PBP` in their own folder) go in **`/data/March33/PSP/GAME/`**.
+4. *(Optional, for the XMB and the game boot)* **Settings → System → PSP Firmware → Download PSP
+   firmware 6.61 from Sony**. If your console can't reach Sony's server, copy Sony's 6.61 update
+   (`EBOOT.PBP`) to `/data/March33/firmware/PSP661_EBOOT.PBP` and press it again.
+
+**Updating M33:** install the newer package on top of the old one. Everything you've set up lives in
+`/data/March33/` and survives updates. The version is in the corner of the opening animation.
+
+## Controls
+
+### While playing
+
+| DualShock 4 | PSP |
 |---|---|
-| `/data/March33/games` | games (ISO, CSO, CHD, PBP, ...): the game browser starts here |
-| `/data/March33/PSP` | the memory stick: `SAVEDATA`, `PPSSPP_STATE`, `SYSTEM/ppsspp.ini`, `GAME` (homebrew), `TEXTURES`, `Cheats` |
-| `/data/March33` | `ppsspp.log`, `boot-trace.log` (startup milestones), `crash.log`, `hang.log` |
-| `/data/March33/profile.txt` | if present, the sampling profiler runs (`samples.log`) |
-| `/app0/assets` | PPSSPP's assets, in the package |
+| Cross / Circle / Square / Triangle | Cross / Circle / Square / Triangle |
+| D-pad | D-pad |
+| Left stick | Analog stick |
+| L1 / R1 | L / R |
+| OPTIONS | START |
+| Touchpad click | SELECT |
+| **L2 (hold)** | **Rewind** |
+| R2 | Fast-forward |
+| **L3 + R3** | **Quick menu** |
+| Right stick, L3, R3 | Free to map (Settings → Controls) |
 
-Title ID `MRCH00033` (content ID `IV0000-MRCH00033_00-MARCH33PSPEMU000`). Install the pkg with
-GoldHEN's Package Installer. Games can be copied over FTP to `/data/March33/games`.
+### In the quick menu
 
-## Building
-
-```
-scripts/seed-build-tree.sh        # ~/m33-build: Resonance's sysroot and RADV Mesa build, rpcs3's FFmpeg, the ucontext overlay
-scripts/clone-ppsspp.sh           # upstream PPSSPP at patches/BASE.txt into ~/m33-build/src/ppsspp (with submodules)
-git -C ~/m33-build/src/ppsspp checkout -b ps4 && git -C ~/m33-build/src/ppsspp apply ~/m33/patches/ppsspp-ps4.patch
-scripts/rebuild-ppsspp.sh         # configure + build (logs in ~/m33-build/logs)
-M33_VERSION=00.01 scripts/package-m33.sh
-scripts/save-patch.sh "message"   # commit ~/m33-build/src/ppsspp and refresh patches/ppsspp-ps4.patch
-py scripts/make-icon.py brand/concepts3d/macro_cut.png brand/concepts3d/macro_wide.png   # sce_sys art, in-app icon
-```
-
-Run the scripts from WSL through `~/m33` (the space in "PS4 Projects" breaks linker flags).
-Upload from Windows (Git Bash): `scripts/upload-to-console.sh out/M33-vXX.YY.pkg`. After a crash,
-`scripts/crashlog.sh` fetches the logs and symbolizes them against the packaged build's ELF.
-
-## How the port is laid out
-
-The PPSSPP side is `patches/ppsspp-ps4.patch` (26 files):
-
-| File | What |
+| Press | To |
 |---|---|
-| `ps4/PS4Main.cpp` | `main()`: system modules, data folders, `NativeInit`, the Vulkan context on the headless surface, the emulator thread, the pad loop; PPSSPP's `System_*` functions |
-| `ps4/PS4VulkanWSI.cpp` | the surface and swapchain on VideoOut (from Resonance) |
-| `ps4/PS4Pad.cpp`, `ps4/PS4Audio.cpp` | ScePad and sceAudioOut |
-| `ps4/ps4.cmake` | the app's sources, RADV, the PS4 libraries, `eboot.bin` |
-| `Common/MemArenaPS4.cpp` | the PSP memory arena on direct memory |
-| `Common/MemoryUtil.cpp` | RWX JIT memory near the code, 16 KiB pages |
-| `Common/GPU/Vulkan/*` | linked-in driver loading, the headless surface |
-| `ppsspp_config.h`, `CMakeLists.txt`, `ext/CMakeLists.txt` | `PPSSPP_PLATFORM(PS4)`, no GL / SDL, glslang's OS layer, the adhoc sockets |
-| `Core/HW/*`, `Core/HLE/sceMpeg.cpp`, `Core/AVIDump.cpp` | `const AVCodec *` for FFmpeg 5+ |
-| `UI/NativeApp.cpp` | assets from `/app0/assets`, the memory stick in `/data/March33` |
+| D-pad / left stick | Move |
+| Left / Right | Change a value (save slot, resolution, volume...) |
+| Cross | Select / turn on or off |
+| Circle, or L3 + R3 again | Back to the game |
 
-The PS4 runtime in `port/` (heap, crash and hang logs, profiler, DNS, network shares, the RADV
-winsys) and `toolchain/` come from Resonance; `port/ps4_net.cpp` defines `gethostbyname` itself
-(PPSSPP's adhoc server uses it, and the C library's version imports a function the console lacks).
+## Settings at a glance
 
-## The PSP's XMB
+M33 keeps **all of PPSSPP's settings** (quick menu → *Settings*), with these defaults for the PS4:
 
-PPSSPP (1.21 on) can boot the real XMB from an installed PSP firmware (any of 1.50 to 6.61):
-Settings > System > PSP Firmware > Launch XMB. M33 adds **Start in the XMB** there: the app goes
-straight into it after its opening, and leaving it (or L3 + R3 > Exit to menu) comes back to M33's
-menus. Hold **L1** while M33 starts to skip it once.
+| Setting | M33's default |
+|---|---|
+| Rendering resolution | 4x (1920x1088) |
+| Post-processing | FSR RCAS (sharpening); add FSR EASU for lower resolutions in *Display & Effects* |
+| Menu sounds | On |
+| Rewind | On (per game) |
+| Frame Generation | Off (per game) |
+| Start in the XMB | Off (*Settings → System → PSP Firmware*) |
 
-What it shows: the XMB's Game column lists the memory stick's games (`PSP/GAME`) and, as CFW ISO
-drivers did, **every disc game in `/data/March33/games`** (ISO, CSO, CHD) with its own icon and
-background: before the XMB boots, M33 writes a stand-in for each (`PSP/GAME/M33ISO_<disc id>/`:
-an EBOOT.PBP made of the disc's PARAM.SFO, ICON0 and PIC1, and M33ISO.TXT naming the disc;
-`ps4/PS4XmbGames.cpp`). Starting one from the XMB boots the disc (`sceKernelLoadExec`). Saved
-Data lists `PSP/SAVEDATA` (= `/data/March33/PSP/SAVEDATA`). The game browser hides the stand-ins,
-and they go away with their disc.
+## Your files
 
-Game boot: started from the XMB, a game gets the firmware's own game boot (the emulated PSP plays
-it, as on a PSP) and then boots as the disc. M33 adds none of its own: its imitation (v00.16-v00.23)
-played on top of the real one and is gone. A disc started from M33's own list goes through the
-firmware too, as a PSP powered on with it in the drive: the firmware boots with the disc in and
-`umd_autoboot` on (for that boot only), plays its startup and game boot, and launches the disc
-(`sceKernelLoadExecVSHDisc`), which M33 then boots as itself, straight in. Without a firmware
-installed, games boot straight in.
+Everything the app creates sits in **`/data/March33/`**:
 
-Known gap: the XMB's Saved Data column doesn't open yet. The firmware reads the memory stick
-through its raw partition device (`msstor0p1:`) and a `fatms0:` devctl (0x02425856), neither
-emulated by PPSSPP.
+- `games/`: your disc games
+- `PSP/`: the PSP memory stick: `SAVEDATA` (your saves), `PPSSPP_STATE` (save states and their
+  pictures), `GAME` (homebrew), `Cheats` (cheat files and the database), `SYSTEM` (settings)
+- `PSP/NAND/`: the installed PSP firmware
+- `firmware/`: the firmware updater, once downloaded
+- `ppsspp.log`, `boot-trace.log`, `crash.log`, `hang.log`: logs for bug reports
 
-Installing a firmware (Sony's files, not included): **Download PSP firmware 6.61 from Sony** on
-the same screen fetches Sony's official updater from its update server (32.6 MB, kept in
-`/data/March33/firmware`) and installs it. Or open a game's info screen and choose Install
-PSP firmware update (most discs carry an updater; Settings also offers to do it from discs by
-itself), or put an official update's `EBOOT.PBP` in a folder under `/data/March33/games` and select
-it in the game browser. It is installed to `/data/March33/PSP/NAND`.
+## Game compatibility
 
-## Branding
+| Status | Meaning |
+|---|---|
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Runs well enough to play through |
+| ![Runs](https://img.shields.io/badge/Runs-48e0ff?style=flat-square) | Starts and plays; not measured yet |
+| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Gets into the game, but slowdowns, glitches or freezes get in the way |
+| ![Nothing](https://img.shields.io/badge/Nothing-455556?style=flat-square) | Doesn't start, or closes right away |
 
-- Home screen tile and background (`sce_sys/icon0.png`, `pic1.png`) and the in-app icon
-  (`assets/ui_images/icon.png`): a PSP-1000-style handheld modelled and rendered in Blender 4.5
-  (`scripts/blender/psp_scene.py`, no Sony assets or logos), composed by `scripts/make-icon.py`.
-  Re-render: `~/tools/blender-4.5.14-linux-x64/blender -b -P scripts/blender/psp_scene.py -- <out> brand/intro-still.png art/Michroma-Regular.ttf 256 1024 macro_cut macro_wide`
-- The startup clip: the handheld spins in, powers on and plays a startup video on its screen
-  (`scripts/blender/startup_anim.py`, then `encode.py` adds the video's sound; 8 s, 60 fps).
-  `package-m33.sh` bundles `brand/startup/m33-startup-preview.mp4` as `assets/startup.mp4`; the
-  app plays it (`ps4/PS4StartupClip.cpp`, FFmpeg) instead of the drawn opening, any button skips
-  it, and a `/data/March33/startup.mp4` on the console takes its place. It contains the PSP's
-  startup video, so it stays out of git (`brand/startup/` is ignored).
-- In the app: the opening animation (`ps4/PS4Brand.cpp`), the M33 logo and intro lettering as
-  vectors in the UI atlas (`scripts/make-brand.py` -> `brand/m33-ui.svg`, merged by
-  `scripts/brand-stage.py` when packaging), the March33 theme (`assets/themes/march33.ini`), the
-  menus' background (`assets/m33_background.jpg`) and "M33" in the menu texts (PPSSPP keeps its
-  credit in the About screen and the opening). `tools/` previews the atlas images and the opening.
+**Tested by us** on a launch-model PS4:
 
-## Not yet
+| Status | Game | Notes |
+|---|---|---|
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Grand Theft Auto: Liberty City Stories | 30 fps (its normal rate), full speed. Some hitches in busy scenes. Its 60 FPS cheat is too heavy for the PS4: the game runs in slow motion. |
+| ![Runs](https://img.shields.io/badge/Runs-48e0ff?style=flat-square) | God of War: Ghost of Sparta | |
+| ![Runs](https://img.shields.io/badge/Runs-48e0ff?style=flat-square) | God of War: Chains of Olympus | |
+| ![Runs](https://img.shields.io/badge/Runs-48e0ff?style=flat-square) | LittleBigPlanet | |
+| ![Runs](https://img.shields.io/badge/Runs-48e0ff?style=flat-square) | SSX on Tour | |
 
-- Testing on a console (first boot, then games). Watch `boot-trace.log` for the milestones.
-- A home screen of its own: Resonance's launcher themes (cover flow, XMB) could front PPSSPP's UI.
+PPSSPP itself runs most of the PSP library: see its [compatibility list](https://report.ppsspp.org/games).
+Tested a game? Tell us on [Discord](https://discord.gg/fqjMs9gDJh) or
+[open an issue](https://github.com/iHaiDeeZ/M33/issues) with the game, its region, and how it ran.
 
-## License
+## FAQ
 
-GPL-2.0-or-later, as PPSSPP ([LICENSE](LICENSE)): `patches/ppsspp-ps4.patch` is a modification of
-PPSSPP, and the PS4 frontend it adds (`ps4/`) is part of that work. The PS4 runtime in `port/` and
-the toolchain scripts come from the Resonance / DolphinPS4 / Crema ports; `port/mesa/ac_ps4_drm.c`
-is the RADV winsys of the PS4 Mesa port (MIT, as Mesa); `port/third_party` keeps its own notices.
-`art/Michroma-Regular.ttf` is under the SIL Open Font License. No PSP firmware, Sony system files or
-games are included: supply your own.
+**Why does a game stutter in busy scenes?**
+The PS4's CPU is usually the limit. Turn **Rewind** off for that game (quick menu), and on a PS4 Pro
+turn on **Boost Mode** in the PS4's settings. A game's first minutes can also hitch while its
+shaders are compiled; they're kept for next time.
+
+**Can games run at 60 fps?**
+Most PSP games run at 30. Their *60 FPS* cheats make the game itself run twice as fast, which the PS4
+usually can't keep up with. Try **Frame Generation** instead: the game keeps its speed and you see 60.
+
+**Where are my saves?**
+In `/data/March33/PSP/SAVEDATA`, as on a PSP's memory stick: you can copy them to and from a real
+PSP or PPSSPP on another device.
+
+**The firmware download fails.**
+Jailbroken consoles often block Sony's servers. M33 then asks public DNS servers itself; if it still
+can't get through, copy the updater over FTP as in [Getting started](#getting-started).
+
+**How do I report a bug?**
+On [Discord](https://discord.gg/fqjMs9gDJh) or in an [issue](https://github.com/iHaiDeeZ/M33/issues).
+Attach `ppsspp.log`, `boot-trace.log` and, if there is one, `crash.log` or `hang.log` from
+`/data/March33/`, and mention the game, its region, the M33 version, your PS4 model and firmware.
+
+## Community
+
+Join the **[M33 Discord](https://discord.gg/fqjMs9gDJh)** for help, game reports and news.
+
+## For developers
+
+How the port works (the Vulkan window system on VideoOut, the memory arena, the JIT, the XMB and the
+firmware game boot) and how to build it: **[docs/TECHNICAL.md](docs/TECHNICAL.md)**.
+
+## Thanks
+
+- **[PPSSPP](https://github.com/hrydgard/ppsspp)**: the emulator itself, by **Henrik Rydgård** and
+  everyone who has contributed to it
+- **[Mesa](https://mesa3d.org)**: the RADV Vulkan driver that draws every frame
+- **[OpenOrbis](https://github.com/OpenOrbis)** and **[PacBrew](https://github.com/PacBrew)**: the
+  PS4 toolchains
+- **[love-ps4](https://github.com/Mari0/love-ps4)**: the reference PS4 setup
+- **[FFmpeg](https://ffmpeg.org)**: video and audio
+- **[CWCheat Database Plus](https://github.com/Saramagrean/CWCheat-Database-Plus-)**: the cheat codes
+- **[RCOMage](https://github.com/kakaroto/RCOMage)**: how the PSP firmware's resources are laid out
+- **[RetroAchievements](https://retroachievements.org)**: achievements
+- **Resonance**, **[Dolphin for PS4](https://github.com/iHaiDeeZ/DolphinPS4)** and
+  **[Crema](https://github.com/iHaiDeeZ/Crema)**: the PS4 groundwork M33 is built on
+
+## License and disclaimer
+
+Released under the **GNU General Public License 2.0 or later**, the same licence as PPSSPP. See
+[LICENSE](LICENSE).
+
+This is a fan-made project with no ties to Sony Interactive Entertainment or the PPSSPP project. PSP,
+PlayStation and PS4 are trademarks of Sony Interactive Entertainment. Please only play games you own.
+This project won't help you find or share game or firmware files.
