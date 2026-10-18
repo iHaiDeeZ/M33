@@ -31,7 +31,12 @@ python3 "$HERE/brand-stage.py" "$STAGE/assets" "$HERE/.."
 # The startup clip (scripts/blender/startup_anim.py + encode.py), played instead of the drawn opening.
 # It carries the user's own PSP startup video (Sony's): bundled in the package on purpose, kept out of
 # git (.gitignore: brand/startup/). M33_STARTUP_CLIP= (empty) packages without it.
+# Without it (a build from the repository), M33's own placeholder clip: the same animation with M33's
+# screen and chime (scripts/blender/placeholder_screen.py).
 CLIP="${M33_STARTUP_CLIP-$HERE/../brand/startup/m33-startup-preview.mp4}"
+if [ -z "${M33_STARTUP_CLIP+x}" ] && [ ! -f "$CLIP" ]; then
+    CLIP="$HERE/../brand/startup-placeholder/m33-startup-placeholder.mp4"
+fi
 if [ -n "$CLIP" ] && [ -f "$CLIP" ]; then
     cp "$CLIP" "$STAGE/assets/startup.mp4"
     echo "startup clip: $(basename "$CLIP") ($(stat -c %s "$CLIP") bytes)"
