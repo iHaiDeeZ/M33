@@ -5,7 +5,11 @@ By **ShiroKlein** ([@iHaiDeeZ](https://github.com/iHaiDeeZ)) · [github.com/iHai
 [PPSSPP](https://github.com/hrydgard/ppsspp) (PSP emulator) for jailbroken PS4 homebrew, built in WSL
 Ubuntu with the Resonance / DolphinPS4 / Crema PS4 toolchain (clang 21 + libc++ 21 on OpenOrbis).
 
-Status: **v00.01 builds and packages; not yet tested on a console.**
+Status: **1.00**: runs on the console. PSP games (ISO, CSO, PBP) with the PSP firmware's XMB and
+game boot, a controller-friendly quick menu (L3 + R3) with save-state pictures and cheats, rewind
+(L2), experimental frame generation (30 to 60 FPS), FSR sharpening, RetroAchievements, and the
+PS4's own keyboard. Build it with the steps below; the package bundles nothing of Sony's except
+the startup clip you render yourself (kept out of the repository).
 
 - Graphics: PPSSPP's Vulkan renderer on DolphinPS4's RADV/GNM port. RADV is linked in and has no
   window system, so `ps4/PS4VulkanWSI.cpp` (Resonance's `ps4_wsi.cpp`) adds `VK_EXT_headless_surface`
