@@ -1340,7 +1340,7 @@ index bab863f..19146b5 100644
  	leftColumn->Add(new Choice(di->T("Disable All")))->OnClick.Handle(this, &CwCheatScreen::OnDisableAll);
  	leftColumn->Add(new PopupSliderChoice(&g_Config.iCwCheatRefreshIntervalMs, 1, 1000, 77, cw->T("Refresh interval"), 1, screenManager()))->SetFormat(di->T("%d ms"));
 diff --git a/UI/DebugOverlay.cpp b/UI/DebugOverlay.cpp
-index 0bf44c7..b95a88b 100644
+index 0bf44c7..7f42b61 100644
 --- a/UI/DebugOverlay.cpp
 +++ b/UI/DebugOverlay.cpp
 @@ -8,6 +8,7 @@
@@ -1369,7 +1369,7 @@ index 0bf44c7..b95a88b 100644
 +			since = now;
 +		}
 +		if (g_Config.bM33FrameGen && made >= 1.0f && (g_Config.iShowStatusFlags & (int)ShowStatusFlags::FPS_COUNTER))
-+			w.F("  → %0.0f shown (+%0.0f generated)", actual_fps + made, made);
++			w.F("  -> %0.0f shown (+%0.0f generated)", actual_fps + made, made);
 +	}
 +#endif
  	if (System_GetPropertyBool(SYSPROP_CAN_READ_BATTERY_PERCENTAGE)) {
