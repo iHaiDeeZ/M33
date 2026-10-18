@@ -910,7 +910,7 @@ index fbc9a46..87bc905 100644
  	virtual bool GetStencilbuffer(u32 fb_address, int fb_stride, GPUDebugBuffer &buffer);
  	virtual bool GetOutputFramebuffer(GPUDebugBuffer &buffer);
 diff --git a/GPU/Common/PresentationCommon.cpp b/GPU/Common/PresentationCommon.cpp
-index d541b43..6540585 100644
+index d541b43..49e6bb0 100644
 --- a/GPU/Common/PresentationCommon.cpp
 +++ b/GPU/Common/PresentationCommon.cpp
 @@ -36,6 +36,7 @@
@@ -939,7 +939,7 @@ index d541b43..6540585 100644
  
  void PresentationCommon::RunPostshaderPasses(const DisplayLayoutConfig &config, OutputFlags flags, int uvRotation, float u0, float v0, float u1, float v1) {
 +#if PPSSPP_PLATFORM(PS4)
-+	M33FrameGen();  // (may put a made frame in the game's frame's place)
++	M33FrameGen(u0, v0, u1, v1);  // (may put a made frame in the game's frame's place)
 +#endif
  	draw_->Invalidate(InvalidationFlags::CACHED_RENDER_STATE);
  
@@ -958,7 +958,7 @@ index d541b43..6540585 100644
  		zoom = 1;
  
  	if (upscaling) {
-@@ -1045,3 +1061,249 @@ void PresentationCommon::CalculateRenderResolution(const DisplayLayoutConfig &co
+@@ -1045,3 +1061,269 @@ void PresentationCommon::CalculateRenderResolution(const DisplayLayoutConfig &co
  
  	*scaleFactor = zoom;
  }
@@ -1062,13 +1062,14 @@ index d541b43..6540585 100644
 +)";
 +
 +void PresentationCommon::M33FrameGenRelease() {
-+	for (Draw::Framebuffer **fb : { &fgPrev_, &fgOut_, &fgSmall_[0], &fgSmall_[1], &fgMotionFb_ }) {
++	for (Draw::Framebuffer **fb : { &fgFrame_[0], &fgFrame_[1], &fgMade_, &fgSmall_[0], &fgSmall_[1], &fgMotionFb_, &fgOutFb_[0], &fgOutFb_[1] }) {
 +		if (*fb) {
 +			(*fb)->Release();
 +			*fb = nullptr;
 +		}
 +	}
 +	fgW_ = fgH_ = 0;
++	fgOutW_[0] = fgOutW_[1] = fgOutH_[0] = fgOutH_[1] = 0;
 +	fgHavePrev_ = false;
 +}
 +
@@ -1100,7 +1101,7 @@ index d541b43..6540585 100644
 +	return true;
 +}
 +
-+void PresentationCommon::M33FrameGen() {
++void PresentationCommon::M33FrameGen(float u0, float v0, float u1, float v1) {
 +	if (!g_Config.bM33FrameGen || fgFailed_ || !srcFramebuffer_) {
 +		if (!g_Config.bM33FrameGen && fgW_)
 +			M33FrameGenRelease();
@@ -1117,8 +1118,12 @@ index d541b43..6540585 100644
 +	fgSinceFlip_ = 0;
 +	fgFlips_ = flips;
 +
-+	int w = 0, h = 0;
-+	draw_->GetFramebufferDimensions(srcFramebuffer_, &w, &h);
++	// the shown part of the game's buffer (its buffers can differ in size; the shown part doesn't)
++	int bw = 0, bh = 0;
++	draw_->GetFramebufferDimensions(srcFramebuffer_, &bw, &bh);
++	const int x0 = (int)std::lround(std::min(u0, u1) * bw), x1 = (int)std::lround(std::max(u0, u1) * bw);
++	const int y0 = (int)std::lround(std::min(v0, v1) * bh), y1 = (int)std::lround(std::max(v0, v1) * bh);
++	const int w = x1 - x0, h = y1 - y0;
 +	if (w <= 0 || h <= 0)
 +		return;
 +	if (w != fgW_ || h != fgH_) {
@@ -1128,18 +1133,19 @@ index d541b43..6540585 100644
 +		fgH_ = h;
 +		fgSW_ = std::max(16, w / scale);
 +		fgSH_ = std::max(16, h / scale);
-+		fgPrev_ = draw_->CreateFramebuffer({ w, h, 1, 1, 0, false, "M33FgPrev" });
-+		fgOut_ = draw_->CreateFramebuffer({ w, h, 1, 1, 0, false, "M33FgOut" });
++		fgFrame_[0] = draw_->CreateFramebuffer({ w, h, 1, 1, 0, false, "M33FgFrame0" });
++		fgFrame_[1] = draw_->CreateFramebuffer({ w, h, 1, 1, 0, false, "M33FgFrame1" });
++		fgMade_ = draw_->CreateFramebuffer({ w, h, 1, 1, 0, false, "M33FgMade" });
 +		fgSmall_[0] = draw_->CreateFramebuffer({ fgSW_, fgSH_, 1, 1, 0, false, "M33FgSmall0" });
 +		fgSmall_[1] = draw_->CreateFramebuffer({ fgSW_, fgSH_, 1, 1, 0, false, "M33FgSmall1" });
 +		fgMotionFb_ = draw_->CreateFramebuffer({ std::max(1, fgSW_ / 8), std::max(1, fgSH_ / 8), 1, 1, 0, false, "M33FgMotion" });
-+		if (!fgPrev_ || !fgOut_ || !fgSmall_[0] || !fgSmall_[1] || !fgMotionFb_) {
++		if (!fgFrame_[0] || !fgFrame_[1] || !fgMade_ || !fgSmall_[0] || !fgSmall_[1] || !fgMotionFb_) {
 +			ERROR_LOG(Log::G3D, "M33 frame generation: no framebuffers for %dx%d, off", w, h);
 +			M33FrameGenRelease();
 +			fgFailed_ = true;
 +			return;
 +		}
-+		NOTICE_LOG(Log::G3D, "M33 frame generation: %dx%d frames, motion at %dx%d", w, h, fgSW_, fgSH_);
++		NOTICE_LOG(Log::G3D, "M33 frame generation: %dx%d pictures, motion at %dx%d", w, h, fgSW_, fgSH_);
 +	}
 +	if (!fgMotion_ || !fgInterp_) {
 +		std::string vsError, fsError, fs2Error;
@@ -1181,35 +1187,49 @@ index d541b43..6540585 100644
 +		draw_->UpdateBuffer(fgVerts_, (const uint8_t *)verts, 0, sizeof(verts), Draw::UPDATE_DISCARD);
 +	}
 +
-+	// the new frame, small, for the motion
-+	Draw::Framebuffer *cur = srcFramebuffer_;
++	// the new frame's shown part into our own buffer, and small for the motion
++	Draw::Framebuffer *cur = fgFrame_[fgCur_], *prev = fgFrame_[fgCur_ ^ 1];
++	draw_->BlitFramebuffer(srcFramebuffer_, x0, y0, x1, y1, cur, 0, 0, w, h, Draw::Aspect::COLOR_BIT, Draw::FB_BLIT_NEAREST, "M33FgFrame");
 +	draw_->BlitFramebuffer(cur, 0, 0, w, h, fgSmall_[fgCur_], 0, 0, fgSW_, fgSH_, Draw::Aspect::COLOR_BIT, Draw::FB_BLIT_LINEAR, "M33FgSmall");
 +	const bool make = fgHavePrev_ && fgInterval_ == 2;
 +	if (make) {
 +		const float px[4] = { 1.0f / fgSW_, 1.0f / fgSH_, 0.0f, 0.0f };
 +		M33FrameGenPass(fgMotion_, fgMotionFb_, fgSmall_[fgCur_ ^ 1], fgSmall_[fgCur_], nullptr, px, 1.0f / fgSW_, 1.0f / fgSH_);
-+		M33FrameGenPass(fgInterp_, fgOut_, fgPrev_, cur, fgMotionFb_, px, 1.0f / w, 1.0f / h);
++		M33FrameGenPass(fgInterp_, fgMade_, prev, cur, fgMotionFb_, px, 1.0f / w, 1.0f / h);
++		// back into a buffer laid out as the game's, so the picture's position in it is the same
++		int slot = -1;
++		for (int i = 0; i < 2; i++)
++			if (fgOutFb_[i] && fgOutW_[i] == bw && fgOutH_[i] == bh)
++				slot = i;
++		if (slot < 0) {
++			slot = fgOutNext_;
++			fgOutNext_ ^= 1;
++			if (fgOutFb_[slot])
++				fgOutFb_[slot]->Release();
++			fgOutFb_[slot] = draw_->CreateFramebuffer({ bw, bh, 1, 1, 0, false, "M33FgOut" });
++			fgOutW_[slot] = bw;
++			fgOutH_[slot] = bh;
++		}
++		if (fgOutFb_[slot]) {
++			draw_->BlitFramebuffer(fgMade_, 0, 0, w, h, fgOutFb_[slot], x0, y0, x1, y1, Draw::Aspect::COLOR_BIT, Draw::FB_BLIT_NEAREST, "M33FgOut");
++			// shown in the game's frame's place this refresh; the next one shows the game's frame
++			SourceFramebuffer(fgOutFb_[slot], srcWidth_, srcHeight_);
++			fgMadeCount_++;
++		}
 +	}
-+	// the new frame kept as the next one's previous
-+	draw_->BlitFramebuffer(cur, 0, 0, w, h, fgPrev_, 0, 0, w, h, Draw::Aspect::COLOR_BIT, Draw::FB_BLIT_NEAREST, "M33FgKeep");
 +	fgCur_ ^= 1;
 +	fgHavePrev_ = true;
-+	if (make) {
-+		// shown in the game's frame's place this refresh; the next one shows the game's frame
-+		SourceFramebuffer(fgOut_, srcWidth_, srcHeight_);
-+		fgMade_++;
-+	}
 +	const double now = time_now_d();
 +	if (now - fgLogAt_ > 30.0) {
 +		if (fgLogAt_ > 0.0)
-+			NOTICE_LOG(Log::G3D, "M33 frame generation: %d frames made in %.0f s (the game a frame every %d refreshes)", fgMade_, now - fgLogAt_, fgInterval_);
++			NOTICE_LOG(Log::G3D, "M33 frame generation: %d frames made in %.0f s (the game a frame every %d refreshes)", fgMadeCount_, now - fgLogAt_, fgInterval_);
 +		fgLogAt_ = now;
-+		fgMade_ = 0;
++		fgMadeCount_ = 0;
 +	}
 +}
 +#endif  // PPSSPP_PLATFORM(PS4)
 diff --git a/GPU/Common/PresentationCommon.h b/GPU/Common/PresentationCommon.h
-index 866ca2a..6e594ec 100644
+index 866ca2a..511c0fb 100644
 --- a/GPU/Common/PresentationCommon.h
 +++ b/GPU/Common/PresentationCommon.h
 @@ -17,6 +17,8 @@
@@ -1221,7 +1241,7 @@ index 866ca2a..6e594ec 100644
  #include "Common/Common.h"
  #include "Common/GPU/Shader.h"
  
-@@ -171,6 +173,22 @@ class PresentationCommon {
+@@ -171,6 +173,27 @@ class PresentationCommon {
  	std::vector<Draw::Framebuffer *> previousFramebuffers_;
  	
  	Draw::Pipeline *stereoPipeline_ = nullptr;
@@ -1229,16 +1249,21 @@ index 866ca2a..6e594ec 100644
 +#if PPSSPP_PLATFORM(PS4)
 +	// M33: frame generation (PresentationCommon.cpp, the end): a 30 fps game's frames with one made
 +	// between each two, shown in the refresh it would repeat a frame in.
-+	void M33FrameGen();
++	void M33FrameGen(float u0, float v0, float u1, float v1);
 +	void M33FrameGenRelease();
 +	bool M33FrameGenPass(Draw::Pipeline *pipeline, Draw::Framebuffer *target, Draw::Framebuffer *t0, Draw::Framebuffer *t1, Draw::Framebuffer *t2, const float setting[4], float texelW, float texelH);
 +	Draw::Pipeline *fgMotion_ = nullptr, *fgInterp_ = nullptr;
 +	Draw::Buffer *fgVerts_ = nullptr;
-+	Draw::Framebuffer *fgPrev_ = nullptr, *fgOut_ = nullptr, *fgSmall_[2] = {}, *fgMotionFb_ = nullptr;
++	// at the shown picture's size (fixed while it is): the frames, the made one; small for the motion
++	Draw::Framebuffer *fgFrame_[2] = {}, *fgMade_ = nullptr, *fgSmall_[2] = {}, *fgMotionFb_ = nullptr;
++	// the made frame back in a buffer laid out as the game's (its shown part where the game's is), one
++	// per buffer size: games swap between buffers of different sizes (GTA: 1924x1088 and 2048x1280)
++	Draw::Framebuffer *fgOutFb_[2] = {};
++	int fgOutW_[2] = {}, fgOutH_[2] = {}, fgOutNext_ = 0;
 +	int fgW_ = 0, fgH_ = 0, fgSW_ = 0, fgSH_ = 0, fgCur_ = 0;
 +	int fgFlips_ = -1, fgSinceFlip_ = 0, fgInterval_ = 0;
 +	bool fgHavePrev_ = false, fgFailed_ = false;
-+	int fgMade_ = 0;
++	int fgMadeCount_ = 0;
 +	double fgLogAt_ = 0.0;
 +#endif
  	ShaderInfo *stereoShaderInfo_ = nullptr;
