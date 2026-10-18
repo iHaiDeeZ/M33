@@ -29,7 +29,9 @@ Status: **v00.01 builds and packages; not yet tested on a console.**
   keeps the chosen resolution and FSR upscales from it.)
 - Quick menu (L3 + R3, `ps4/PS4QuickMenu.cpp`), made for the controller after Crema's in-game menu:
   the paused game behind a dark panel sliding in from the left, rows with icons and a gliding
-  highlight, values changed with Left / Right. Resume, Save / Load State (by slot), 60 FPS, Cheats
+  highlight, values changed with Left / Right. Resume, Save / Load State (by slot; the slot's picture,
+  date and dots for the slots on a card beside the panel, as Resonance's), 60 FPS, Rewind (on or off,
+  per game: off spends nothing), Cheats
   (a page of their own: each on or off, the game's codes fetched from PPSSPP's CWCheat database),
   Resolution, Game Volume, FPS Counter, Settings (PPSSPP's full settings), Display & Effects,
   Restart Game, Exit. PPSSPP's own pause screen stays for the XMB.

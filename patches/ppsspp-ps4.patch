@@ -546,10 +546,10 @@ index 93654cf..fe1e1a9 100644
  	// Use gameID_EmulatedTimestamp for filename
  	std::string discID = g_paramSFO.GetDiscID();
 diff --git a/Core/Config.cpp b/Core/Config.cpp
-index a15dc9e..a974cbc 100644
+index a15dc9e..d8ebcb4 100644
 --- a/Core/Config.cpp
 +++ b/Core/Config.cpp
-@@ -267,7 +267,11 @@ static const ConfigSetting generalSettings[] = {
+@@ -267,11 +267,16 @@ static const ConfigSetting generalSettings[] = {
  	ConfigSetting("Language", SETTING(g_Config, sLanguageIni), &DefaultLangRegion, CfgFlag::DEFAULT),
  	ConfigSetting("ForceLagSync2", SETTING(g_Config, bForceLagSync), false, CfgFlag::PER_GAME),
  	ConfigSetting("DiscordRichPresence", SETTING(g_Config, bDiscordRichPresence), false, CfgFlag::DEFAULT),
@@ -561,7 +561,12 @@ index a15dc9e..a974cbc 100644
  
  	ConfigSetting("DisableHTTPS", SETTING(g_Config, bDisableHTTPS), false, CfgFlag::DONT_SAVE),
  	ConfigSetting("AutoLoadSaveState", SETTING(g_Config, iAutoLoadSaveState), 0, CfgFlag::PER_GAME),
-@@ -328,6 +332,7 @@ static const ConfigSetting generalSettings[] = {
+ 	ConfigSetting("EnableCheats", SETTING(g_Config, bEnableCheats), false, CfgFlag::PER_GAME | CfgFlag::REPORT),
++	ConfigSetting("M33Rewind", SETTING(g_Config, bM33Rewind), true, CfgFlag::PER_GAME),
+ 	ConfigSetting("EnablePlugins", SETTING(g_Config, bEnablePlugins), true, CfgFlag::PER_GAME | CfgFlag::REPORT),
+ 	ConfigSetting("EnableFileHandlerPlugins", SETTING(g_Config, bEnableFileHandlerPlugins), false, CfgFlag::DEFAULT),
+ 	ConfigSetting("CwCheatRefreshRate", SETTING(g_Config, iCwCheatRefreshIntervalMs), 77, CfgFlag::PER_GAME),
+@@ -328,6 +333,7 @@ static const ConfigSetting generalSettings[] = {
  	ConfigSetting("CompressSymbols", SETTING(g_Config, bCompressSymbols), true, CfgFlag::DEFAULT),
  	ConfigSetting("CacheFullIsoInRam", SETTING(g_Config, bCacheFullIsoInRam), false, CfgFlag::PER_GAME),
  	ConfigSetting("AutoUpgradeFirmware", SETTING(g_Config, bAutoUpgradeFirmware), true, CfgFlag::DEFAULT),
@@ -569,7 +574,7 @@ index a15dc9e..a974cbc 100644
  	ConfigSetting("RemoteISOPort", SETTING(g_Config, iRemoteISOPort), 0, CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOServer", SETTING(g_Config, sLastRemoteISOServer), "", CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOPort", SETTING(g_Config, iLastRemoteISOPort), 0, CfgFlag::DEFAULT),
-@@ -455,6 +460,9 @@ static int DefaultInternalResolution() {
+@@ -455,6 +461,9 @@ static int DefaultInternalResolution() {
  	return scale;
  #elif PPSSPP_PLATFORM(IOS)
  	return 2;
@@ -579,7 +584,7 @@ index a15dc9e..a974cbc 100644
  #else
  	return 0;
  #endif
-@@ -1150,7 +1158,12 @@ static const ConfigSetting upgradeSettings[] = {
+@@ -1150,7 +1159,12 @@ static const ConfigSetting upgradeSettings[] = {
  };
  
  static const ConfigSetting themeSettings[] = {
@@ -592,7 +597,7 @@ index a15dc9e..a974cbc 100644
  };
  
  static const ConfigSetting vrSettings[] = {
-@@ -1403,6 +1416,13 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
+@@ -1403,6 +1417,13 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
  	bool postShadersInitialized = iniFile.HasSection("PostShaderList");
  	Section *postShaderChain = iniFile.GetOrCreateSection("PostShaderList");
  	Section *postShaderSetting = iniFile.GetOrCreateSection("PostShaderSetting");
@@ -607,7 +612,7 @@ index a15dc9e..a974cbc 100644
  		postShaderChain->Set("PostShader1", "ColorCorrection");
  		postShaderSetting->Set("ColorCorrectionSettingCurrentValue1", 1.0f);
 diff --git a/Core/Config.h b/Core/Config.h
-index 3adb876..0b9e22e 100644
+index 3adb876..f2a67f6 100644
 --- a/Core/Config.h
 +++ b/Core/Config.h
 @@ -253,6 +253,7 @@ struct Config : public ConfigBlock {
@@ -618,6 +623,14 @@ index 3adb876..0b9e22e 100644
  	int iRemoteISOPort; // Also used for serving a local remote debugger.
  	std::string sLastRemoteISOServer;
  	int iLastRemoteISOPort;
+@@ -372,6 +373,7 @@ struct Config : public ConfigBlock {
+ 	int iAutoLoadSaveState; // 0 = off, 1 = oldest (deprecated), 2 = newest, 3+ = slot number + 3 (up to 5)
+ 	int iSaveStateSlotCount;
+ 	bool bEnableCheats;
++	bool bM33Rewind;  // M33: rewind on L2 (ps4/PS4Rewind.cpp)
+ 	bool bReloadCheats;
+ 	bool bEnablePlugins;
+ 	bool bEnableFileHandlerPlugins;
 diff --git a/Core/FileSystems/tlzrc.cpp b/Core/FileSystems/tlzrc.cpp
 index 980495c..82de5d7 100644
 --- a/Core/FileSystems/tlzrc.cpp
@@ -3661,10 +3674,10 @@ index 0000000..2f80279
 +}  // namespace PS4Pad
 diff --git a/ps4/PS4QuickMenu.cpp b/ps4/PS4QuickMenu.cpp
 new file mode 100644
-index 0000000..f2c9b0d
+index 0000000..e865ed3
 --- /dev/null
 +++ b/ps4/PS4QuickMenu.cpp
-@@ -0,0 +1,740 @@
+@@ -0,0 +1,818 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3698,7 +3711,10 @@ index 0000000..f2c9b0d
 +#include "Common/File/Path.h"
 +#include "Common/Input/InputState.h"
 +#include "Common/Input/KeyCodes.h"
++#include "Common/File/FileUtil.h"
++#include "Common/GPU/thin3d.h"
 +#include "Common/Render/DrawBuffer.h"
++#include "Common/Render/ManagedTexture.h"
 +#include "Common/System/OSD.h"
 +#include "Common/System/System.h"
 +#include "Common/TimeUtil.h"
@@ -3736,6 +3752,7 @@ index 0000000..f2c9b0d
 +	ROW_SAVE,
 +	ROW_LOAD,
 +	ROW_FPS60,
++	ROW_REWIND,
 +	ROW_CHEATS,
 +	ROW_RESOLUTION,
 +	ROW_VOLUME,
@@ -3748,7 +3765,7 @@ index 0000000..f2c9b0d
 +};
 +
 +const char *const kRowLabels[ROW_COUNT] = {
-+	"Resume", "Save State", "Load State", "60 FPS", "Cheats", "Resolution", "Game Volume", "FPS Counter",
++	"Resume", "Save State", "Load State", "60 FPS", "Rewind (L2)", "Cheats", "Resolution", "Game Volume", "FPS Counter",
 +	"Settings", "Display & Effects", "Restart Game", "Exit to M33",
 +};
 +
@@ -3977,6 +3994,10 @@ index 0000000..f2c9b0d
 +				UI::PlayUISound(on ? UI::UISound::TOGGLE_ON : UI::UISound::TOGGLE_OFF);
 +			break;
 +		}
++		case ROW_REWIND:
++			g_Config.bM33Rewind = !g_Config.bM33Rewind;
++			UI::PlayUISound(g_Config.bM33Rewind ? UI::UISound::TOGGLE_ON : UI::UISound::TOGGLE_OFF);
++			break;
 +		case ROW_CHEATS:
 +			if (activate) {
 +				M33Cheats::Load();
@@ -4070,6 +4091,8 @@ index 0000000..f2c9b0d
 +			case M33Cheats::Fps60::OFF: return "Off";
 +			default: return "No code for this game";
 +			}
++		case ROW_REWIND:
++			return g_Config.bM33Rewind ? "On" : "Off";
 +		case ROW_CHEATS: {
 +			const int n = M33Cheats::EnabledCount();
 +			return n ? StringFromFormat("%d on", n) : "";
@@ -4089,7 +4112,7 @@ index 0000000..f2c9b0d
 +	}
 +
 +	bool HasArrows(int row) const {
-+		return row == ROW_SAVE || row == ROW_LOAD || row == ROW_FPS60 || row == ROW_RESOLUTION || row == ROW_VOLUME || row == ROW_COUNTER;
++		return row == ROW_SAVE || row == ROW_LOAD || row == ROW_FPS60 || row == ROW_REWIND || row == ROW_RESOLUTION || row == ROW_VOLUME || row == ROW_COUNTER;
 +	}
 +
 +	// drawing helpers: the atlas's white texel, for flat and gradient shapes
@@ -4140,6 +4163,9 @@ index 0000000..f2c9b0d
 +		return w;
 +	}
 +	void DrawMain(UIContext &dc, DrawBuffer *db, float x0, float right, float W, float H, float k, float a, double now);
++	void DrawStateCard(UIContext &dc, DrawBuffer *db, float right, float W, float H, float k, float a);
++	// The picture PPSSPP saved with the slot's state (its .jpg), as a texture; reloaded when the slot or its date changes.
++	Draw::Texture *StatePicture(Draw::DrawContext *draw);
 +	void DrawCheats(UIContext &dc, DrawBuffer *db, float x0, float right, float W, float H, float k, float a);
 +
 +	Path gamePath_;
@@ -4153,7 +4179,33 @@ index 0000000..f2c9b0d
 +	double repeatAt_ = 0.0, opened_ = 0.0, lastTime_ = 0.0;
 +	float slide_ = 0.0f, highlight_ = 0.0f, highlightVel_ = 0.0f;
 +	float u_ = 0.0f, v_ = 0.0f, fontPx_ = 1.0f;
++	float card_ = 0.0f;
++	Draw::Texture *statePic_ = nullptr;
++	std::string statePicKey_;
++public:
++	~M33QuickMenu() override {
++		if (statePic_)
++			statePic_->Release();
++	}
 +};
++
++Draw::Texture *M33QuickMenu::StatePicture(Draw::DrawContext *draw) {
++	const std::string date = SaveState::HasSaveInSlot(statePrefix_, slot_) ? SaveState::GetSlotDateAsString(statePrefix_, slot_) : std::string();
++	const std::string key = std::to_string(slot_) + "|" + date;
++	if (key == statePicKey_)
++		return statePic_;
++	statePicKey_ = key;
++	if (statePic_) {
++		statePic_->Release();
++		statePic_ = nullptr;
++	}
++	if (date.empty())
++		return nullptr;
++	std::string data;
++	if (File::ReadBinaryFileToString(SaveState::GenerateSaveSlotPath(statePrefix_, slot_, SaveState::SCREENSHOT_EXTENSION), &data) && !data.empty())
++		statePic_ = CreateTextureFromFileData(draw, (const uint8_t *)data.data(), data.size(), ImageFileType::DETECT, false, "M33StatePicture");
++	return statePic_;
++}
 +
 +// A row's icon, drawn with lines and shapes (as Crema's), centred on (cx, cy), size s
 +void M33QuickMenu::Icon(DrawBuffer *db, int row, float cx, float cy, float s, uint32_t c) {
@@ -4174,6 +4226,10 @@ index 0000000..f2c9b0d
 +	case ROW_FPS60:  // a speedometer
 +		Arc(db, cx, cy + h * 0.25f, h * 0.85f, kPi, 2 * kPi, t, c);
 +		Line(db, cx, cy + h * 0.25f, cx + h * 0.55f, cy - h * 0.35f, t, c);
++		break;
++	case ROW_REWIND:  // two arrows back
++		Tri(db, cx - h, cy, cx, cy - h * 0.6f, cx, cy + h * 0.6f, c);
++		Tri(db, cx, cy, cx + h, cy - h * 0.6f, cx + h, cy + h * 0.6f, c);
 +		break;
 +	case ROW_CHEATS:  // a star
 +		for (int i = 0; i < 5; i++) {
@@ -4345,6 +4401,41 @@ index 0000000..f2c9b0d
 +	}
 +	if (!status_.empty())
 +		Text(dc, status_, lx, H - 130 * k, 24 * k, Col(WARN, a));
++	DrawStateCard(dc, db, right, W, H, k, a);
++}
++
++void M33QuickMenu::DrawStateCard(UIContext &dc, DrawBuffer *db, float right, float W, float H, float k, float a) {
++	// fades in beside the panel while Save or Load State is selected
++	const float want = sel_ == ROW_SAVE || sel_ == ROW_LOAD ? 1.0f : 0.0f;
++	card_ += (want - card_) * 0.25f;
++	const float c = card_ * a;
++	if (c < 0.02f)
++		return;
++	const float cw = std::min(W * 0.36f, W - right - 120 * k), ch = cw * 272.0f / 480.0f;
++	const float ax = right + (W - right - cw) * 0.5f, ay = H * 0.27f, bx = ax + cw, by = ay + ch;
++	const uint32_t shadow = Col(0, 0.43f * c), back = Col(0x0A0E18, 0.86f * c);
++	Quad(db, ax + 6 * k, ay + 8 * k, bx + 6 * k, by + 8 * k, shadow, shadow, shadow, shadow);
++	Quad(db, ax, ay, bx, by, back, back, back, back);
++	Draw::Texture *pic = StatePicture(dc.GetDrawContext());
++	if (pic) {
++		dc.Flush();
++		dc.GetDrawContext()->BindTexture(0, pic);
++		db->DrawTexRect(Bounds(ax, ay, cw, ch), 0, 0, 1, 1, Col(0xFFFFFF, c));
++		dc.Flush();
++		dc.RebindTexture();
++	} else {
++		Text(dc, "Empty", (ax + bx) * 0.5f, (ay + by) * 0.5f, 30 * k, Col(TEXT, 0.8f * c), ALIGN_CENTER);
++	}
++	RectLine(db, ax, ay, bx, by, 1.5f * k, Col(0xFFFFFF, 0.31f * c));
++	// the slots as dots, the current one bigger
++	const int slots = std::max(1, g_Config.iSaveStateSlotCount);
++	for (int i = 0; i < slots; i++) {
++		const float dx = (ax + bx) * 0.5f + (i - (slots - 1) * 0.5f) * 24 * k, dy = by + 32 * k;
++		const bool cur = i == slot_;
++		db->FillCircle(dx, dy, (cur ? 6.5f : 4.0f) * k, 12, Col(0xFFFFFF, (cur ? 1.0f : 0.43f) * c));
++	}
++	const std::string date = SaveState::HasSaveInSlot(statePrefix_, slot_) ? SaveState::GetSlotDateAsString(statePrefix_, slot_) : std::string("Empty");
++	Text(dc, StringFromFormat("Slot %d   ", slot_ + 1) + date, ax, by + 60 * k, 26 * k, Col(TEXT, c));
 +}
 +
 +void M33QuickMenu::DrawCheats(UIContext &dc, DrawBuffer *db, float x0, float right, float W, float H, float k, float a) {
@@ -4437,10 +4528,10 @@ index 0000000..5a23a2c
 +UIScreen *M33_CreatePauseMenu(const Path &gamePath, bool bootPending);
 diff --git a/ps4/PS4Rewind.cpp b/ps4/PS4Rewind.cpp
 new file mode 100644
-index 0000000..d2ba048
+index 0000000..5d9f48e
 --- /dev/null
 +++ b/ps4/PS4Rewind.cpp
-@@ -0,0 +1,570 @@
+@@ -0,0 +1,636 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4482,6 +4573,8 @@ index 0000000..d2ba048
 +#include <cstring>
 +#include <deque>
 +#include <string>
++#include <condition_variable>
++#include <mutex>
 +#include <thread>
 +
 +#include <zstd.h>
@@ -4494,7 +4587,9 @@ index 0000000..d2ba048
 +#include "Common/Thread/ThreadUtil.h"
 +#include "Common/TimeUtil.h"
 +#include "Common/UI/Context.h"
++#include "Core/Config.h"
 +#include "Core/RetroAchievements.h"
++#include "Core/HW/Display.h"
 +#include "Core/SaveState.h"
 +#include "Core/Screenshot.h"
 +#include "GPU/Common/GPUDebugInterface.h"
@@ -4528,7 +4623,7 @@ index 0000000..d2ba048
 +constexpr int kPicW = 480, kPicH = 272;
 +constexpr size_t kPicRaw = kPicW * kPicH * 2;  // RGB565
 +constexpr size_t kPicCap = 512 * 1024;         // a compressed picture, at most (ZSTD_compressBound)
-+constexpr size_t kFixed = 3 * kSnapshotCap + kPicRaw + kPicCap + 2 * kPicW * kPicH * 4;
++constexpr size_t kFixed = 3 * kSnapshotCap + kPicRaw + kPicCap + 3 * kPicW * kPicH * 4;
 +
 +struct Buffer {
 +	u8 *data = nullptr;
@@ -4562,6 +4657,15 @@ index 0000000..d2ba048
 +u8 *g_picZ = nullptr;     // a picture compressed
 +u8 *g_picRgba = nullptr;  // the picture shown, for its texture
 +u8 *g_picRead = nullptr;  // a picture read back from the GPU
++// The picture worker: a read-back picture (g_picIn) to RGB565 (g_picRaw) and zstd (g_picZ), off the
++// emulation thread (it cost ~3 ms there, 30 times a second: too much at 60 FPS).
++u8 *g_picIn = nullptr;
++std::thread g_picThread;
++std::mutex g_picLock;
++std::condition_variable g_picCv;
++bool g_picPending = false, g_picDone = false;
++size_t g_picOutSize = 0;
++u32 g_picTag = 0;
 +Draw::Framebuffer *g_picFbo = nullptr;  // the displayed picture, at 480x272
 +int g_picReadValid = 0;  // (the first late readback has nothing in it yet)
 +
@@ -4586,6 +4690,43 @@ index 0000000..d2ba048
 +double g_snapMs = 0.0, g_picMs = 0.0;
 +int g_snaps = 0, g_picsTaken = 0;
 +
++void PictureWorker() {
++	SetCurrentThreadName("M33RewindPics");
++	for (;;) {
++		std::unique_lock<std::mutex> lock(g_picLock);
++		g_picCv.wait(lock, [] { return g_picPending; });
++		lock.unlock();
++		u16 *dst = (u16 *)g_picRaw;
++		const u8 *src = g_picIn;
++		for (int i = 0; i < kPicW * kPicH; i++, src += 4)
++			*dst++ = (u16)(((src[0] >> 3) << 11) | ((src[1] >> 2) << 5) | (src[2] >> 3));
++		const size_t z = ZSTD_compressCCtx(g_pcctx, g_picZ, kPicCap, g_picRaw, kPicRaw, 1);
++		lock.lock();
++		g_picOutSize = ZSTD_isError(z) ? 0 : z;
++		g_picPending = false;
++		g_picDone = true;
++		g_picCv.notify_all();
++	}
++}
++
++void *Alloc(size_t size);
++
++// The worker's finished picture into the history; wait: for the worker to be idle first.
++void CollectPicture(bool wait) {
++	std::unique_lock<std::mutex> lock(g_picLock);
++	if (wait)
++		g_picCv.wait(lock, [] { return !g_picPending; });
++	if (!g_picDone)
++		return;
++	g_picDone = false;
++	if (g_picOutSize) {
++		if (void *p = Alloc(g_picOutSize)) {
++			memcpy(p, g_picZ, g_picOutSize);
++			g_pics.push_back({ p, (u32)g_picOutSize, g_picTag });
++		}
++	}
++}
++
 +bool Init() {
 +	if (g_initTried)
 +		return g_ready;
@@ -4609,6 +4750,7 @@ index 0000000..d2ba048
 +		g_picZ = p += kPicRaw;
 +		g_picRgba = p += kPicCap;
 +		g_picRead = p += kPicW * kPicH * 4;
++		g_picIn = p += kPicW * kPicH * 4;
 +		g_space = create_mspace_with_base((u8 *)addr + kFixed, len - kFixed, 1);
 +		g_cctx = ZSTD_createCCtx();
 +		g_pcctx = ZSTD_createCCtx();
@@ -4616,6 +4758,8 @@ index 0000000..d2ba048
 +		if (!g_space || !g_cctx || !g_pcctx || !g_dctx)
 +			break;
 +		g_ready = true;
++		g_picThread = std::thread(PictureWorker);
++		g_picThread.detach();
 +		NOTICE_LOG(Log::SaveState, "Rewind: %d MiB of direct memory (%d MiB for the history)", (int)mb, (int)((len - kFixed) / MB));
 +		return true;
 +	}
@@ -4806,18 +4950,15 @@ index 0000000..d2ba048
 +	}
 +	if (!gpu->BlitDisplayTo(g_picFbo, kPicW, kPicH))
 +		return;
++	CollectPicture(false);
 +	if (draw->CopyFramebufferToMemory(g_picFbo, Draw::Aspect::COLOR_BIT, 0, 0, kPicW, kPicH, Draw::DataFormat::R8G8B8A8_UNORM,
 +			g_picRead, kPicW, Draw::ReadbackMode::OLD_DATA_OK, "M33RewindPicture") && g_picReadValid++ > 0) {
-+		u16 *dst = (u16 *)g_picRaw;
-+		const u8 *src = g_picRead;
-+		for (int i = 0; i < kPicW * kPicH; i++, src += 4)
-+			*dst++ = (u16)(((src[0] >> 3) << 11) | ((src[1] >> 2) << 5) | (src[2] >> 3));
-+		const size_t z = ZSTD_compressCCtx(g_pcctx, g_picZ, kPicCap, g_picRaw, kPicRaw, 1);
-+		if (!ZSTD_isError(z)) {
-+			if (void *p = Alloc(z)) {
-+				memcpy(p, g_picZ, z);
-+				g_pics.push_back({ p, (u32)z, g_curId });
-+			}
++		std::lock_guard<std::mutex> lock(g_picLock);
++		if (!g_picPending && !g_picDone) {  // (else the worker's behind: this picture is skipped)
++			std::swap(g_picRead, g_picIn);
++			g_picTag = g_curId;
++			g_picPending = true;
++			g_picCv.notify_all();
 +		}
 +	}
 +	g_picMs += (time_now_d() - start) * 1000.0;
@@ -4827,8 +4968,10 @@ index 0000000..d2ba048
 +			bytes += d.size;
 +		for (const Pic &p : g_pics)
 +			bytes += p.size;
-+		NOTICE_LOG(Log::SaveState, "Rewind: snapshot %.1f MiB in %.1f ms, picture in %.1f ms; %.1f s kept (%d snapshots, %d pictures, %.0f MiB)",
-+			g_cur.size / (double)MB, g_snaps ? g_snapMs / g_snaps : 0.0, g_picMs / g_picsTaken,
++		float vps = 0, fps = 0, actual = 0;
++		__DisplayGetFPS(&vps, &fps, &actual);
++		NOTICE_LOG(Log::SaveState, "Rewind: game at %.0f fps (%.0f%% speed); snapshot %.1f MiB in %.1f ms, picture in %.1f ms; %.1f s kept (%d snapshots, %d pictures, %.0f MiB)",
++			actual, vps / 59.94f * 100.0f, g_cur.size / (double)MB, g_snaps ? g_snapMs / g_snaps : 0.0, g_picMs / g_picsTaken,
 +			g_pics.size() / kPicsPerSecond, (int)g_deltas.size(), (int)g_pics.size(), bytes / (double)MB);
 +		g_picsTaken = g_snaps = 0;
 +		g_picMs = g_snapMs = 0.0;
@@ -4888,8 +5031,17 @@ index 0000000..d2ba048
 +		g_active = false;
 +		return false;
 +	}
++	if (!g_Config.bM33Rewind) {
++		// off (the quick menu, per game): nothing recorded, nothing spent
++		if (g_haveCur || !g_pics.empty())
++			M33Rewind_Reset();
++		g_active = false;
++		return false;
++	}
 +	auto sy = GetI18NCategory(I18NCat::SYSTEM);
 +	const double now = time_now_d();
++	if (held && !g_rewinding && g_ready)
++		CollectPicture(true);
 +	if (held && (g_rewinding || !g_pics.empty())) {
 +		if (!g_rewinding) {
 +			Join();
@@ -4939,7 +5091,7 @@ index 0000000..d2ba048
 +}
 +
 +void M33Rewind_AfterFrame(Draw::DrawContext *draw) {
-+	if (!g_ready || g_rewinding)
++	if (!g_ready || g_rewinding || !g_Config.bM33Rewind)
 +		return;
 +	if (++g_picFrames >= kPicInterval) {
 +		g_picFrames = 0;
@@ -4993,6 +5145,11 @@ index 0000000..d2ba048
 +	if (g_worker.joinable())
 +		g_worker.join();
 +	g_pending = false;
++	{
++		std::unique_lock<std::mutex> lock(g_picLock);
++		g_picCv.wait(lock, [] { return !g_picPending; });
++		g_picDone = false;
++	}
 +	ClearHistory();
 +	g_cur.size = g_next.size = 0;
 +	g_curId = 0;
