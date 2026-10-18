@@ -992,7 +992,7 @@ index bab863f..19146b5 100644
  	leftColumn->Add(new Choice(di->T("Disable All")))->OnClick.Handle(this, &CwCheatScreen::OnDisableAll);
  	leftColumn->Add(new PopupSliderChoice(&g_Config.iCwCheatRefreshIntervalMs, 1, 1000, 77, cw->T("Refresh interval"), 1, screenManager()))->SetFormat(di->T("%d ms"));
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
-index e1a8d56..ca30af2 100644
+index e1a8d56..0a99d94 100644
 --- a/UI/EmuScreen.cpp
 +++ b/UI/EmuScreen.cpp
 @@ -60,6 +60,14 @@ using namespace std::placeholders;
@@ -1102,7 +1102,27 @@ index e1a8d56..ca30af2 100644
  				}
  			}
  		}
-@@ -1464,9 +1509,10 @@ void EmuScreen::update() {
+@@ -1417,6 +1462,19 @@ void EmuScreen::update() {
+ 	resumeButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR && Memory::MemFault_MayBeResumable() ? V_VISIBLE : V_GONE);
+ 	resetButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR ? V_VISIBLE : V_GONE);
+ 	backButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR ? V_VISIBLE : V_GONE);
++#if PPSSPP_PLATFORM(PS4)
++	// M33: the crash screen's buttons by controller: focus on the first, the D-pad moves it
++	if (coreState == CoreState::CORE_RUNTIME_ERROR) {
++		if (!crashFocus_) {
++			crashFocus_ = true;
++			UI::EnableFocusMovement(true);
++			(resumeButton_->GetVisibility() == V_VISIBLE ? resumeButton_ : resetButton_)->SetFocus(UI::FocusFlags::CAUSE_FORCED);
++		}
++	} else if (crashFocus_) {
++		crashFocus_ = false;
++		UI::EnableFocusMovement(false);
++	}
++#endif
+ 
+ 	if (chatButton_ && chatMenu_) {
+ 		if (chatMenu_->GetVisibility() != V_GONE) {
+@@ -1464,9 +1522,10 @@ void EmuScreen::update() {
  
  	if (pauseTrigger_) {
  		pauseTrigger_ = false;
@@ -1114,7 +1134,18 @@ index e1a8d56..ca30af2 100644
  	if (!PSP_IsInited())
  		return;
  
-@@ -1735,6 +1781,14 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1715,6 +1774,10 @@ bool EmuScreen::AllowFocusMovement() const {
+ 	if (chatMenu_ && chatMenu_->GetVisibility() == UI::V_VISIBLE) {
+ 		return true;
+ 	}
++#if PPSSPP_PLATFORM(PS4)
++	if (coreState == CoreState::CORE_RUNTIME_ERROR)
++		return true;  // M33: the crash screen's buttons
++#endif
+ 	// We have just a game controller and possibly a chat and debug button. Don't allow focus movement.
+ 	return false;
+ }
+@@ -1735,6 +1798,14 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  	PSP_UpdateDebugStats((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::DEBUG_STATS || g_Config.bLogFrameDrops);
  	clearColor_ = 0;
  	bool blockedExecution = Achievements::IsBlockingExecution();
@@ -1129,7 +1160,7 @@ index e1a8d56..ca30af2 100644
  	if (!blockedExecution) {
  		// We process savestates before running the frame.
  		SaveState::Process();
-@@ -1805,6 +1859,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1805,6 +1876,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  			// Run post processing and other passes.
  			gpu->PrepareCopyDisplayToOutput(displayLayoutConfig);
  			gpu->EndHostFrame();
@@ -1140,7 +1171,7 @@ index e1a8d56..ca30af2 100644
  
  			// The right time to run this
  			if (ScreenshotNotifyPostGameRender(draw) && skipBufferEffects) {
-@@ -1841,6 +1899,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1841,6 +1916,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  }
  
  bool EmuScreen::hasVisibleUI() {
@@ -1151,7 +1182,7 @@ index e1a8d56..ca30af2 100644
  	// Regular but uncommon UI.
  	if (saveStatePreview_->GetVisibility() != UI::V_GONE || loadingSpinner_->GetVisibility() == UI::V_VISIBLE)
  		return true;
-@@ -1872,6 +1934,9 @@ void EmuScreen::renderUI() {
+@@ -1872,6 +1951,9 @@ void EmuScreen::renderUI() {
  	// This sets up some important states but not the viewport.
  	ctx->Begin();
  
@@ -1161,6 +1192,18 @@ index e1a8d56..ca30af2 100644
  	if (root_) {
  		UI::LayoutViewHierarchy(*ctx, RootMargins(), root_, LayoutMode(), UseImmersiveMode());
  		root_->Draw(*ctx);
+diff --git a/UI/EmuScreen.h b/UI/EmuScreen.h
+index 08a7dda..828b314 100644
+--- a/UI/EmuScreen.h
++++ b/UI/EmuScreen.h
+@@ -126,6 +126,7 @@ class EmuScreen : public UIScreen, protected ControlListener {
+ 	UI::Spinner *loadingSpinner_ = nullptr;
+ 	UI::Button *resumeButton_ = nullptr;
+ 	UI::Button *resetButton_ = nullptr;
++	bool crashFocus_ = false;  // M33: the crash screen's buttons have the focus
+ 	UI::Button *backButton_ = nullptr;
+ 	UI::Clickable *chatButton_ = nullptr;
+ 	ChatMenu *chatMenu_ = nullptr;
 diff --git a/UI/FirmwareScreen.cpp b/UI/FirmwareScreen.cpp
 index 444036b..986cd4c 100644
 --- a/UI/FirmwareScreen.cpp
@@ -2257,10 +2300,10 @@ index 0000000..870978a
 +void M33_EndIntro();
 diff --git a/ps4/PS4Cheats.cpp b/ps4/PS4Cheats.cpp
 new file mode 100644
-index 0000000..43fb9e6
+index 0000000..18f73e0
 --- /dev/null
 +++ b/ps4/PS4Cheats.cpp
-@@ -0,0 +1,361 @@
+@@ -0,0 +1,286 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -2339,6 +2382,13 @@ index 0000000..43fb9e6
 +		std::string line = text.substr(start, end - start);
 +		if (!line.empty() && line.back() == '\r')
 +			line.pop_back();
++		if (line.compare(0, 3, "\xEF\xBB\xBF") == 0) {
++			line.erase(0, 3);
++			if (line.empty()) {
++				start = end + 1;
++				continue;
++			}
++		}
 +		if (end < text.size() || !line.empty())
 +			lines.push_back(line);
 +		start = end + 1;
@@ -2359,43 +2409,6 @@ index 0000000..43fb9e6
 +void Reload() {
 +	g_Config.bEnableCheats = true;
 +	g_Config.bReloadCheats = true;
-+}
-+
-+std::string Lower(std::string s) {
-+	for (char &c : s)
-+		c = (char)tolower((unsigned char)c);
-+	return s;
-+}
-+
-+bool IsFrameRateCode(const std::string &name) {
-+	const std::string n = Lower(name);
-+	return n.find("fps") != std::string::npos && n.find('[') != 0;
-+}
-+
-+// The "60 FPS" cheat for the disc's version, or the only one.
-+int Find60() {
-+	std::vector<int> candidates;
-+	for (size_t i = 0; i < g_items.size(); i++) {
-+		if (g_items[i].header)
-+			continue;
-+		const std::string n = Lower(g_items[i].name);
-+		if (n.find("60 fps") != std::string::npos || n.find("60fps") != std::string::npos)
-+			candidates.push_back((int)i);
-+	}
-+	if (candidates.size() <= 1)
-+		return candidates.empty() ? -1 : candidates[0];
-+	// "60 FPS (USAv1)" / "60 FPS (UMDv3.0)": the one for DISC_VERSION's major number
-+	const std::string version = g_paramSFO.GetValueString("DISC_VERSION");
-+	if (!version.empty()) {
-+		const std::string tag = std::string("v") + version.substr(0, version.find('.'));
-+		for (int i : candidates) {
-+			const std::string n = Lower(g_items[i].name);
-+			const size_t at = n.find(tag);
-+			if (at != std::string::npos && (at + tag.size() >= n.size() || !isdigit((unsigned char)n[at + tag.size()])))
-+				return i;
-+		}
-+	}
-+	return candidates[0];
 +}
 +
 +bool SetEnabled(const std::vector<std::pair<int, bool>> &changes) {
@@ -2430,6 +2443,29 @@ index 0000000..43fb9e6
 +		g_gameID = id;
 +		g_engine = std::make_unique<CWCheatEngine>(g_gameID);
 +		g_engine->CreateCheatFile();
++	}
++	{
++		std::string raw;
++		if (File::ReadTextFileToString(g_engine->CheatFilename(), &raw)) {
++			std::vector<std::string> lines = ReadLines(g_engine->CheatFilename());
++			bool changed = raw.find("\xEF\xBB\xBF") != std::string::npos;
++			const Path done = GetSysDirectory(DIRECTORY_CHEATS) / ".m33-no60fps";
++			std::string doneList;
++			File::ReadTextFileToString(done, &doneList);
++			if (doneList.find(g_gameID) == std::string::npos) {
++				for (std::string &line : lines) {
++					if (line.compare(0, 4, "_C1 ") == 0 && (line.find("60 FPS") != std::string::npos || line.find("60 Fps") != std::string::npos)) {
++						line[2] = '0';
++						changed = true;
++					}
++				}
++				File::WriteStringToFile(true, doneList + g_gameID + "\n", done);
++			}
++			if (changed && WriteLines(g_engine->CheatFilename(), lines)) {
++				NOTICE_LOG(Log::CwCheats, "M33: %s's cheat file repaired", g_gameID.c_str());
++				g_Config.bReloadCheats = true;
++			}
++		}
 +	}
 +	g_info = g_engine->FileInfo();
 +	g_items.clear();
@@ -2553,81 +2589,13 @@ index 0000000..43fb9e6
 +	return (int)added.size();
 +}
 +
-+// Whether the database has a 60 FPS code for the game (looked up once per game).
-+bool DatabaseHas60() {
-+	static std::string checkedFor;
-+	static bool has = false;
-+	if (checkedFor == g_gameID)
-+		return has;
-+	checkedFor = g_gameID;
-+	has = false;
-+	FILE *in = g_gameID.size() == 9 ? File::OpenCFile(DatabasePath(), "rt") : nullptr;
-+	if (!in)
-+		return false;
-+	const std::string wanted = "_S " + g_gameID.substr(0, 4) + "-" + g_gameID.substr(4);
-+	bool inGame = false;
-+	char buf[2048];
-+	while (fgets(buf, sizeof(buf), in)) {
-+		std::string line(buf);
-+		while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
-+			line.pop_back();
-+		if (line.size() >= 2 && line[0] == '_' && line[1] == 'S') {
-+			if (inGame)
-+				break;
-+			inGame = line == wanted;
-+		} else if (inGame && line.size() >= 2 && line[0] == '_' && line[1] == 'C') {
-+			const std::string n = Lower(line);
-+			if (n.find("60 fps") != std::string::npos || n.find("60fps") != std::string::npos) {
-+				has = true;
-+				break;
-+			}
-+		}
-+	}
-+	fclose(in);
-+	return has;
-+}
-+
-+Fps60 Fps60State() {
-+	const int i = Find60();
-+	if (i >= 0)
-+		return g_items[i].enabled ? Fps60::ON : Fps60::OFF;
-+	if (!DatabaseExists())
-+		return Fps60::OFF;  // (turning it on fetches the database first)
-+	return DatabaseHas60() ? Fps60::OFF : Fps60::UNAVAILABLE;
-+}
-+
-+bool SetFps60(bool on) {
-+	Load();
-+	int i = Find60();
-+	if (i < 0 && on) {
-+		if (!DatabaseExists())
-+			return false;
-+		ImportFromDatabase();
-+		i = Find60();
-+	}
-+	if (i < 0)
-+		return false;
-+	std::vector<std::pair<int, bool>> changes = { { i, on } };
-+	if (on) {
-+		// the game's other frame-rate codes off (its "30 FPS", "Unlimited FPS"...)
-+		for (size_t j = 0; j < g_items.size(); j++) {
-+			if ((int)j != i && !g_items[j].header && g_items[j].enabled && IsFrameRateCode(g_items[j].name))
-+				changes.push_back({ (int)j, false });
-+		}
-+	}
-+	const bool ok = SetEnabled(changes);
-+	if (ok)
-+		NOTICE_LOG(Log::CwCheats, "M33: 60 FPS %s (%s)", on ? "on" : "off", g_items.empty() ? "" : Items()[Find60() >= 0 ? Find60() : 0].name.c_str());
-+	return ok;
-+}
-+
 +}  // namespace M33Cheats
 diff --git a/ps4/PS4Cheats.h b/ps4/PS4Cheats.h
 new file mode 100644
-index 0000000..20f244b
+index 0000000..06d0eeb
 --- /dev/null
 +++ b/ps4/PS4Cheats.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,46 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -2642,7 +2610,7 @@ index 0000000..20f244b
 +// A copy of the GPL 2.0 should have been included with the program.
 +// If not, see http://www.gnu.org/licenses/
 +
-+// M33: the running game's cheats for the quick menu (ps4/PS4Cheats.cpp), and its 60 FPS switch.
++// M33: the running game's cheats for the quick menu (ps4/PS4Cheats.cpp).
 +
 +#pragma once
 +
@@ -2672,12 +2640,6 @@ index 0000000..20f244b
 +void DownloadDatabase(std::function<void(bool ok)> done);
 +// The game's codes from the database into its cheat file; how many lines came in (-1: no database).
 +int ImportFromDatabase();
-+
-+// 60 FPS: the game's "60 FPS" code (for its disc version), from the database if needed.
-+enum class Fps60 { UNAVAILABLE, OFF, ON };
-+Fps60 Fps60State();
-+// True if it changed; may first need the database (then: false, and DownloadDatabase).
-+bool SetFps60(bool on);
 +
 +}  // namespace M33Cheats
 diff --git a/ps4/PS4Keyboard.cpp b/ps4/PS4Keyboard.cpp
@@ -3674,10 +3636,10 @@ index 0000000..2f80279
 +}  // namespace PS4Pad
 diff --git a/ps4/PS4QuickMenu.cpp b/ps4/PS4QuickMenu.cpp
 new file mode 100644
-index 0000000..e865ed3
+index 0000000..24295a4
 --- /dev/null
 +++ b/ps4/PS4QuickMenu.cpp
-@@ -0,0 +1,818 @@
+@@ -0,0 +1,808 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3751,7 +3713,6 @@ index 0000000..e865ed3
 +	ROW_RESUME,
 +	ROW_SAVE,
 +	ROW_LOAD,
-+	ROW_FPS60,
 +	ROW_REWIND,
 +	ROW_CHEATS,
 +	ROW_RESOLUTION,
@@ -3765,7 +3726,7 @@ index 0000000..e865ed3
 +};
 +
 +const char *const kRowLabels[ROW_COUNT] = {
-+	"Resume", "Save State", "Load State", "60 FPS", "Rewind (L2)", "Cheats", "Resolution", "Game Volume", "FPS Counter",
++	"Resume", "Save State", "Load State", "Rewind (L2)", "Cheats", "Resolution", "Game Volume", "FPS Counter",
 +	"Settings", "Display & Effects", "Restart Game", "Exit to M33",
 +};
 +
@@ -3974,26 +3935,6 @@ index 0000000..e865ed3
 +				TriggerFinish(DR_BACK);
 +			}
 +			break;
-+		case ROW_FPS60: {
-+			const M33Cheats::Fps60 state = M33Cheats::Fps60State();
-+			if (state == M33Cheats::Fps60::UNAVAILABLE)
-+				break;
-+			const bool on = state != M33Cheats::Fps60::ON;
-+			if (on && !M33Cheats::DatabaseExists()) {
-+				if (!M33Cheats::Downloading()) {
-+					status_ = "Downloading the cheat database...";
-+					M33Cheats::DownloadDatabase([this](bool ok) {
-+						status_ = ok ? "" : "Couldn't download the cheat database";
-+						if (ok && M33Cheats::SetFps60(true))
-+							UI::PlayUISound(UI::UISound::TOGGLE_ON);
-+					});
-+				}
-+				break;
-+			}
-+			if (M33Cheats::SetFps60(on))
-+				UI::PlayUISound(on ? UI::UISound::TOGGLE_ON : UI::UISound::TOGGLE_OFF);
-+			break;
-+		}
 +		case ROW_REWIND:
 +			g_Config.bM33Rewind = !g_Config.bM33Rewind;
 +			UI::PlayUISound(g_Config.bM33Rewind ? UI::UISound::TOGGLE_ON : UI::UISound::TOGGLE_OFF);
@@ -4083,14 +4024,6 @@ index 0000000..e865ed3
 +				return StringFromFormat("Slot %d: empty", slot_ + 1);
 +			return StringFromFormat("Slot %d", slot_ + 1);
 +		}
-+		case ROW_FPS60:
-+			if (M33Cheats::Downloading())
-+				return "Getting codes...";
-+			switch (M33Cheats::Fps60State()) {
-+			case M33Cheats::Fps60::ON: return "On";
-+			case M33Cheats::Fps60::OFF: return "Off";
-+			default: return "No code for this game";
-+			}
 +		case ROW_REWIND:
 +			return g_Config.bM33Rewind ? "On" : "Off";
 +		case ROW_CHEATS: {
@@ -4112,7 +4045,7 @@ index 0000000..e865ed3
 +	}
 +
 +	bool HasArrows(int row) const {
-+		return row == ROW_SAVE || row == ROW_LOAD || row == ROW_FPS60 || row == ROW_REWIND || row == ROW_RESOLUTION || row == ROW_VOLUME || row == ROW_COUNTER;
++		return row == ROW_SAVE || row == ROW_LOAD || row == ROW_REWIND || row == ROW_RESOLUTION || row == ROW_VOLUME || row == ROW_COUNTER;
 +	}
 +
 +	// drawing helpers: the atlas's white texel, for flat and gradient shapes
@@ -4153,6 +4086,37 @@ index 0000000..e865ed3
 +		Quad(db, x2 - t, y1, x2, y2, c, c, c, c);
 +	}
 +	void Icon(DrawBuffer *db, int row, float cx, float cy, float s, uint32_t c);
++	enum Glyph { GLYPH_CROSS, GLYPH_CIRCLE, GLYPH_DPAD };
++	// A DualShock 4 button as on the pad: a dark round key with its symbol in its colour (blue cross,
++	// red circle); the D-pad as its cross of four arrow keys. Centred on (cx, cy), radius r.
++	void ButtonGlyph(DrawBuffer *db, Glyph glyph, float cx, float cy, float r, float a) {
++		if (glyph == GLYPH_DPAD) {
++			const float w = r * 0.62f, l = r * 1.0f;
++			const uint32_t key = Col(0x2A2F3A, 0.95f * a), edge = Col(0xC8CCD6, 0.9f * a), arrow = Col(0xE8EAF0, a);
++			// the cross, outlined
++			Quad(db, cx - w * 0.5f - 1.2f, cy - l - 1.2f, cx + w * 0.5f + 1.2f, cy + l + 1.2f, edge, edge, edge, edge);
++			Quad(db, cx - l - 1.2f, cy - w * 0.5f - 1.2f, cx + l + 1.2f, cy + w * 0.5f + 1.2f, edge, edge, edge, edge);
++			Quad(db, cx - w * 0.5f, cy - l, cx + w * 0.5f, cy + l, key, key, key, key);
++			Quad(db, cx - l, cy - w * 0.5f, cx + l, cy + w * 0.5f, key, key, key, key);
++			const float t = w * 0.28f, o = l * 0.72f, d = l * 0.38f;
++			Tri(db, cx, cy - o, cx - t, cy - d, cx + t, cy - d, arrow);
++			Tri(db, cx, cy + o, cx - t, cy + d, cx + t, cy + d, arrow);
++			Tri(db, cx - o, cy, cx - d, cy - t, cx - d, cy + t, arrow);
++			Tri(db, cx + o, cy, cx + d, cy - t, cx + d, cy + t, arrow);
++			return;
++		}
++		db->FillCircle(cx, cy, r + 1.5f, 32, Col(0xC8CCD6, 0.9f * a));
++		db->FillCircle(cx, cy, r, 32, Col(0x1E222B, 0.97f * a));
++		const float t = std::max(2.0f, r * 0.17f);
++		if (glyph == GLYPH_CROSS) {
++			const uint32_t blue = Col(0x7DB4F0, a);
++			const float e = r * 0.42f;
++			Line(db, cx - e, cy - e, cx + e, cy + e, t, blue);
++			Line(db, cx - e, cy + e, cx + e, cy - e, t, blue);
++		} else {
++			Arc(db, cx, cy, r * 0.48f, 0.0f, 6.2832f, t, Col(0xFF6B6B, a));
++		}
++	}
 +	void Text(UIContext &dc, const std::string &text, float x, float y, float px, uint32_t color, int align = ALIGN_LEFT | ALIGN_TOP) {
 +		dc.SetFontScale(px / fontPx_, px / fontPx_);
 +		dc.DrawText(text, x, y, color, align);
@@ -4222,10 +4186,6 @@ index 0000000..e865ed3
 +	case ROW_LOAD:  // a folder
 +		RectLine(db, cx - h * 0.9f, cy - h * 0.45f, cx + h * 0.9f, cy + h * 0.7f, t, c);
 +		Quad(db, cx - h * 0.9f, cy - h * 0.7f, cx - h * 0.2f, cy - h * 0.45f, c, c, c, c);
-+		break;
-+	case ROW_FPS60:  // a speedometer
-+		Arc(db, cx, cy + h * 0.25f, h * 0.85f, kPi, 2 * kPi, t, c);
-+		Line(db, cx, cy + h * 0.25f, cx + h * 0.55f, cy - h * 0.35f, t, c);
 +		break;
 +	case ROW_REWIND:  // two arrows back
 +		Tri(db, cx - h, cy, cx, cy - h * 0.6f, cx, cy + h * 0.6f, c);
@@ -4327,28 +4287,21 @@ index 0000000..e865ed3
 +	{
 +		float bx = x0 + 70 * k;
 +		const float by = H - 80 * k;
-+		auto hint = [&](const char *image, const char *text) {
-+			if (image) {
-+				db->DrawImage(ImageID(image), bx + 17 * k, by, 0.9f * k * 1.5f, Color(Col(TEXT, a)), ALIGN_CENTER);
-+				bx += 44 * k;
-+			}
++		auto label = [&](const char *text) {
 +			Text(dc, text, bx, by, 24 * k, Col(TEXT, 0.85f * a), ALIGN_LEFT | ALIGN_VCENTER);
 +			bx += TextW(dc, text, 24 * k) + 36 * k;
 +		};
-+		hint("I_CROSS", cheatsPage_ ? "On / Off" : "Select");
++		ButtonGlyph(db, GLYPH_CROSS, bx + 17 * k, by, 17 * k, a);
++		bx += 44 * k;
++		label(cheatsPage_ ? "On / Off" : "Select");
 +		if (!cheatsPage_) {
-+			// a small D-pad: four carets
-+			const float cx = bx + 17 * k, cy = by, s = 6 * k;
-+			const uint32_t c = Col(TEXT, a);
-+			Tri(db, cx, cy - 15 * k, cx - s, cy - 8 * k, cx + s, cy - 8 * k, c);
-+			Tri(db, cx, cy + 15 * k, cx - s, cy + 8 * k, cx + s, cy + 8 * k, c);
-+			Tri(db, cx - 15 * k, cy, cx - 8 * k, cy - s, cx - 8 * k, cy + s, c);
-+			Tri(db, cx + 15 * k, cy, cx + 8 * k, cy - s, cx + 8 * k, cy + s, c);
++			ButtonGlyph(db, GLYPH_DPAD, bx + 17 * k, by, 17 * k, a);
 +			bx += 44 * k;
-+			Text(dc, "Change", bx, by, 24 * k, Col(TEXT, 0.85f * a), ALIGN_LEFT | ALIGN_VCENTER);
-+			bx += TextW(dc, "Change", 24 * k) + 36 * k;
++			label("Change");
 +		}
-+		hint("I_CIRCLE", "Back");
++		ButtonGlyph(db, GLYPH_CIRCLE, bx + 17 * k, by, 17 * k, a);
++		bx += 44 * k;
++		label("Back");
 +	}
 +	dc.SetFontScale(1.0f, 1.0f);
 +	dc.Flush();
@@ -4391,8 +4344,7 @@ index 0000000..e865ed3
 +		const bool arrows = sel && HasArrows(row);
 +		const float tw = TextW(dc, value, 27 * k);
 +		const float vx = hx1 - 24 * k - tw - (arrows ? 22 * k : 0.0f);
-+		const bool muted = row == ROW_FPS60 && M33Cheats::Fps60State() == M33Cheats::Fps60::UNAVAILABLE;
-+		Text(dc, value, vx, y + 22 * k, 27 * k, Col(muted ? WARN : TEXT, 0.9f * alpha), ALIGN_LEFT | ALIGN_VCENTER);
++		Text(dc, value, vx, y + 22 * k, 27 * k, Col(TEXT, 0.9f * alpha), ALIGN_LEFT | ALIGN_VCENTER);
 +		if (arrows) {
 +			const float cy = y + 22 * k, s = 7 * k, l = vx - 26 * k, r = hx1 - 14 * k;
 +			Tri(db, l, cy, l + s, cy - s, l + s, cy + s, Col(TEXT, 0.9f * alpha));
@@ -4528,10 +4480,10 @@ index 0000000..5a23a2c
 +UIScreen *M33_CreatePauseMenu(const Path &gamePath, bool bootPending);
 diff --git a/ps4/PS4Rewind.cpp b/ps4/PS4Rewind.cpp
 new file mode 100644
-index 0000000..5d9f48e
+index 0000000..4150343
 --- /dev/null
 +++ b/ps4/PS4Rewind.cpp
-@@ -0,0 +1,636 @@
+@@ -0,0 +1,652 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4613,6 +4565,10 @@ index 0000000..5d9f48e
 +namespace {
 +
 +constexpr int kSnapInterval = 10;  // frames between snapshots (6 a second; the pictures are 30)
++constexpr int kSnapMaxFrames = 30;  // ...put off to a frame with room, at most this long
++double g_lastFrameAt = 0.0;
++int g_slowFrames = 0, g_slowAfterSnapshot = 0;
++bool g_lastWasSnapshot = false;
 +constexpr int kPicInterval = 2;   // frames between pictures (30 a second: every frame of a 30 fps game)
 +constexpr double kPicsPerSecond = 60.0 / kPicInterval;
 +constexpr size_t kBlock = 2048;
@@ -4970,10 +4926,11 @@ index 0000000..5d9f48e
 +			bytes += p.size;
 +		float vps = 0, fps = 0, actual = 0;
 +		__DisplayGetFPS(&vps, &fps, &actual);
-+		NOTICE_LOG(Log::SaveState, "Rewind: game at %.0f fps (%.0f%% speed); snapshot %.1f MiB in %.1f ms, picture in %.1f ms; %.1f s kept (%d snapshots, %d pictures, %.0f MiB)",
-+			actual, vps / 59.94f * 100.0f, g_cur.size / (double)MB, g_snaps ? g_snapMs / g_snaps : 0.0, g_picMs / g_picsTaken,
++		NOTICE_LOG(Log::SaveState, "Rewind: %d slow frames (%d right after a snapshot); game at %.0f fps (%.0f%% speed); snapshot %.1f MiB in %.1f ms, picture in %.1f ms; %.1f s kept (%d snapshots, %d pictures, %.0f MiB)",
++			g_slowFrames, g_slowAfterSnapshot, actual, vps / 59.94f * 100.0f, g_cur.size / (double)MB, g_snaps ? g_snapMs / g_snaps : 0.0, g_picMs / g_picsTaken,
 +			g_pics.size() / kPicsPerSecond, (int)g_deltas.size(), (int)g_pics.size(), bytes / (double)MB);
 +		g_picsTaken = g_snaps = 0;
++		g_slowFrames = g_slowAfterSnapshot = 0;
 +		g_picMs = g_snapMs = 0.0;
 +	}
 +}
@@ -5083,9 +5040,20 @@ index 0000000..5d9f48e
 +		Resume();
 +		g_snapFrames = g_picFrames = 0;
 +	}
-+	if (++g_snapFrames >= kSnapInterval) {
++	// A snapshot takes ~14 ms of the emulation thread: in a frame with room to spare, so a heavy
++	// scene doesn't stutter on it; at the latest every kSnapMaxFrames. Slow frames are counted.
++	const double frameMs = g_lastFrameAt > 0.0 ? (now - g_lastFrameAt) * 1000.0 : 0.0;
++	g_lastFrameAt = now;
++	if (frameMs > 25.0) {
++		g_slowFrames++;
++		if (g_lastWasSnapshot)
++			g_slowAfterSnapshot++;
++	}
++	g_lastWasSnapshot = false;
++	if (++g_snapFrames >= kSnapInterval && (frameMs < 15.0 || g_snapFrames >= kSnapMaxFrames)) {
 +		g_snapFrames = 0;
 +		Snapshot();
++		g_lastWasSnapshot = true;
 +	}
 +	return false;
 +}
