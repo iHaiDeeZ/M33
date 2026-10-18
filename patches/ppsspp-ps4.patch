@@ -852,6 +852,48 @@ index 746c4c3..600c30b 100644
  
  	// For testing / automated tests.  Runs a save state verification pass (async.)
  	// Warning: callback will be called on a different thread.
+diff --git a/GPU/Common/FramebufferManagerCommon.cpp b/GPU/Common/FramebufferManagerCommon.cpp
+index 8a602c9..a66eb56 100644
+--- a/GPU/Common/FramebufferManagerCommon.cpp
++++ b/GPU/Common/FramebufferManagerCommon.cpp
+@@ -3268,6 +3268,24 @@ bool FramebufferManagerCommon::GetDisplayFramebuffer(GPUDebugBuffer &buffer, int
+ 	return ReadFramebufferForDebug(vfb, offsetX, offsetY, 480, 272, buffer, maxScaleFactor);
+ }
+ 
++bool FramebufferManagerCommon::BlitDisplayTo(Draw::Framebuffer *dst, int dstW, int dstH) {
++	u32 offsetX = 0, offsetY = 0;
++	VirtualFramebuffer *vfb = FindDisplayVFB(displayFramebufPtr_, &offsetX, &offsetY);
++	if (!dst || !vfb || !vfb->fbo || !useBufferedRendering_)
++		return false;
++	const int scale = std::max(1, (int)vfb->renderScaleFactor);
++	const int x0 = std::min((int)offsetX * scale, (int)vfb->renderWidth);
++	const int y0 = std::min((int)offsetY * scale, (int)vfb->renderHeight);
++	const int x1 = std::min(((int)offsetX + 480) * scale, (int)vfb->renderWidth);
++	const int y1 = std::min(((int)offsetY + 272) * scale, (int)vfb->renderHeight);
++	if (x1 <= x0 || y1 <= y0)
++		return false;
++	const bool ok = draw_->BlitFramebuffer(vfb->fbo, x0, y0, x1, y1, dst, 0, 0, dstW, dstH, Draw::Aspect::COLOR_BIT, Draw::FB_BLIT_LINEAR, "M33DisplayBlit");
++	gstate_c.Dirty(DIRTY_TEXTURE_IMAGE | DIRTY_TEXTURE_PARAMS);
++	RebindFramebuffer("M33DisplayBlit");
++	return ok;
++}
++
+ // Reads back a framebuffer, or the w x h at x, y in it (in PSP pixels) if w isn't 0.
+ bool FramebufferManagerCommon::ReadFramebufferForDebug(VirtualFramebuffer *vfb, int x, int y, int cropW, int cropH, GPUDebugBuffer &buffer, int maxScaleFactor) {
+ 	int w = vfb->renderWidth, h = vfb->renderHeight;
+diff --git a/GPU/Common/FramebufferManagerCommon.h b/GPU/Common/FramebufferManagerCommon.h
+index fbc9a46..87bc905 100644
+--- a/GPU/Common/FramebufferManagerCommon.h
++++ b/GPU/Common/FramebufferManagerCommon.h
+@@ -479,6 +479,8 @@ class FramebufferManagerCommon {
+ 	virtual bool GetFramebuffer(u32 fb_address, int fb_stride, GEBufferFormat format, GPUDebugBuffer &buffer, int maxRes);
+ 	// The 480x272 the display shows, wherever in a framebuffer it is.
+ 	bool GetDisplayFramebuffer(GPUDebugBuffer &buffer, int maxRes);
++	// M33: the displayed picture (the PSP's 480x272 of it) scaled into dst, on the GPU: no readback.
++	bool BlitDisplayTo(Draw::Framebuffer *dst, int dstW, int dstH);
+ 	virtual bool GetDepthbuffer(u32 fb_address, int fb_stride, u32 z_address, int z_stride, GPUDebugBuffer &buffer);
+ 	virtual bool GetStencilbuffer(u32 fb_address, int fb_stride, GPUDebugBuffer &buffer);
+ 	virtual bool GetOutputFramebuffer(GPUDebugBuffer &buffer);
 diff --git a/GPU/Common/PresentationCommon.cpp b/GPU/Common/PresentationCommon.cpp
 index d541b43..c03148b 100644
 --- a/GPU/Common/PresentationCommon.cpp
@@ -870,6 +912,40 @@ index d541b43..c03148b 100644
  		zoom = 1;
  
  	if (upscaling) {
+diff --git a/GPU/GPUCommon.cpp b/GPU/GPUCommon.cpp
+index 4168d33..a59de6d 100644
+--- a/GPU/GPUCommon.cpp
++++ b/GPU/GPUCommon.cpp
+@@ -2921,3 +2921,7 @@ void GPUCommon::UpdateMatrixProducts() {
+ 	// It's just a bit operation, cheaper to clean all three together.
+ 	gstate_c.Clean(DIRTY_WORLD_VIEW_PROJ_MATRIX | DIRTY_VIEW_PROJ_MATRIX | DIRTY_CULL_MATRIX);
+ }
++
++bool GPUCommon::BlitDisplayTo(Draw::Framebuffer *dst, int dstW, int dstH) {
++	return framebufferManager_ && framebufferManager_->BlitDisplayTo(dst, dstW, dstH);
++}
+diff --git a/GPU/GPUCommon.h b/GPU/GPUCommon.h
+index 3fc3418..9ff714b 100644
+--- a/GPU/GPUCommon.h
++++ b/GPU/GPUCommon.h
+@@ -54,6 +54,8 @@ inline bool IsTrianglePrim(GEPrimitiveType prim) {
+ }
+ 
+ struct TransformStats;
++namespace Draw { class Framebuffer; }
++
+ class GPUCommon {
+ public:
+ 	GPUCommon(const GPUCommon &) = delete;
+@@ -78,6 +80,8 @@ class GPUCommon {
+ 	virtual bool GetOutputFramebuffer(GPUDebugBuffer &buffer) { return false; }
+ 
+ 	bool GetCurrentDisplayList(DisplayList &list) const;
++	// M33: the displayed picture scaled into dst on the GPU (the PS4 rewind's pictures).
++	bool BlitDisplayTo(Draw::Framebuffer *dst, int dstW, int dstH);
+ 	bool GetCurrentDrawAsDebugVertices(GECommand cmd, GEPrimitiveType prim, GEPrimitiveType *outPrim, int count, std::vector<GPUDebugVertex> *vertices, std::vector<u16> *indices, int *lowerIndexBound, TransformStats *stats, DebugVertexFlags flags) const;
+ 	int GetCurrentPrim(GEPrimitiveType *prim, GECommand *outCmd) const;  // Return value has the count.
+ 
 diff --git a/UI/Background.cpp b/UI/Background.cpp
 index df985bc..5bf2ed4 100644
 --- a/UI/Background.cpp
@@ -903,7 +979,7 @@ index bab863f..19146b5 100644
  	leftColumn->Add(new Choice(di->T("Disable All")))->OnClick.Handle(this, &CwCheatScreen::OnDisableAll);
  	leftColumn->Add(new PopupSliderChoice(&g_Config.iCwCheatRefreshIntervalMs, 1, 1000, 77, cw->T("Refresh interval"), 1, screenManager()))->SetFormat(di->T("%d ms"));
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
-index e1a8d56..948fbc1 100644
+index e1a8d56..7773c56 100644
 --- a/UI/EmuScreen.cpp
 +++ b/UI/EmuScreen.cpp
 @@ -60,6 +60,13 @@ using namespace std::placeholders;
@@ -1007,7 +1083,7 @@ index e1a8d56..948fbc1 100644
  			gpu->EndHostFrame();
 +#if PPSSPP_PLATFORM(PS4)
 +			if (coreState == CORE_RUNNING_CPU)
-+				M33Rewind_AfterFrame();
++				M33Rewind_AfterFrame(draw);
 +#endif
  
  			// The right time to run this
@@ -3121,10 +3197,10 @@ index 0000000..2f80279
 +}  // namespace PS4Pad
 diff --git a/ps4/PS4Rewind.cpp b/ps4/PS4Rewind.cpp
 new file mode 100644
-index 0000000..9a7eace
+index 0000000..d2ba048
 --- /dev/null
 +++ b/ps4/PS4Rewind.cpp
-@@ -0,0 +1,558 @@
+@@ -0,0 +1,570 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3201,7 +3277,7 @@ index 0000000..9a7eace
 +
 +namespace {
 +
-+constexpr int kSnapInterval = 6;  // frames between snapshots (10 a second)
++constexpr int kSnapInterval = 10;  // frames between snapshots (6 a second; the pictures are 30)
 +constexpr int kPicInterval = 2;   // frames between pictures (30 a second: every frame of a 30 fps game)
 +constexpr double kPicsPerSecond = 60.0 / kPicInterval;
 +constexpr size_t kBlock = 2048;
@@ -3212,7 +3288,7 @@ index 0000000..9a7eace
 +constexpr int kPicW = 480, kPicH = 272;
 +constexpr size_t kPicRaw = kPicW * kPicH * 2;  // RGB565
 +constexpr size_t kPicCap = 512 * 1024;         // a compressed picture, at most (ZSTD_compressBound)
-+constexpr size_t kFixed = 3 * kSnapshotCap + kPicRaw + kPicCap + kPicW * kPicH * 4;
++constexpr size_t kFixed = 3 * kSnapshotCap + kPicRaw + kPicCap + 2 * kPicW * kPicH * 4;
 +
 +struct Buffer {
 +	u8 *data = nullptr;
@@ -3245,6 +3321,9 @@ index 0000000..9a7eace
 +u8 *g_picRaw = nullptr;   // a picture as RGB565
 +u8 *g_picZ = nullptr;     // a picture compressed
 +u8 *g_picRgba = nullptr;  // the picture shown, for its texture
++u8 *g_picRead = nullptr;  // a picture read back from the GPU
++Draw::Framebuffer *g_picFbo = nullptr;  // the displayed picture, at 480x272
++int g_picReadValid = 0;  // (the first late readback has nothing in it yet)
 +
 +std::thread g_worker;
 +bool g_pending = false;  // a difference compressed in g_zout, to keep once the worker is done
@@ -3289,6 +3368,7 @@ index 0000000..9a7eace
 +		g_picRaw = p += kSnapshotCap;
 +		g_picZ = p += kPicRaw;
 +		g_picRgba = p += kPicCap;
++		g_picRead = p += kPicW * kPicH * 4;
 +		g_space = create_mspace_with_base((u8 *)addr + kFixed, len - kFixed, 1);
 +		g_cctx = ZSTD_createCCtx();
 +		g_pcctx = ZSTD_createCCtx();
@@ -3470,24 +3550,28 @@ index 0000000..9a7eace
 +	return true;
 +}
 +
-+void TakePicture() {
-+	if (!gpu || !g_haveCur)
++void TakePicture(Draw::DrawContext *draw) {
++	if (!gpu || !g_haveCur || !draw)
 +		return;
 +	const double start = time_now_d();
-+	GPUDebugBuffer buf;
-+	if (!gpu->GetCurrentFramebuffer(buf, GPU_DBG_FRAMEBUF_DISPLAY, 1))
++	// The displayed picture blitted down to 480x272 on the GPU, and read back late: what comes back is
++	// the copy made a few frames ago, without waiting for the GPU. (A blocking readback made the CPU
++	// wait for the GPU to finish everything: 12-27 ms, 30 times a second, and the game fell behind
++	// with its sound.)
++	if (!g_picFbo) {
++		Draw::FramebufferDesc desc{ kPicW, kPicH, 1, 1, 0, false, "M33RewindPicture" };
++		g_picFbo = draw->CreateFramebuffer(desc);
++		if (!g_picFbo)
++			return;
++	}
++	if (!gpu->BlitDisplayTo(g_picFbo, kPicW, kPicH))
 +		return;
-+	u8 *temp = nullptr;
-+	u32 w = kPicW, h = kPicH;
-+	const u8 *rgba = ConvertBufferToScreenshot(buf, true, temp, w, h);
-+	if (rgba && w == (u32)kPicW && h == (u32)kPicH) {
-+		const u32 stride = temp ? w : buf.GetStride();
++	if (draw->CopyFramebufferToMemory(g_picFbo, Draw::Aspect::COLOR_BIT, 0, 0, kPicW, kPicH, Draw::DataFormat::R8G8B8A8_UNORM,
++			g_picRead, kPicW, Draw::ReadbackMode::OLD_DATA_OK, "M33RewindPicture") && g_picReadValid++ > 0) {
 +		u16 *dst = (u16 *)g_picRaw;
-+		for (u32 y = 0; y < h; y++) {
-+			const u8 *src = rgba + (size_t)y * stride * 4;
-+			for (u32 x = 0; x < w; x++, src += 4)
-+				*dst++ = (u16)(((src[0] >> 3) << 11) | ((src[1] >> 2) << 5) | (src[2] >> 3));
-+		}
++		const u8 *src = g_picRead;
++		for (int i = 0; i < kPicW * kPicH; i++, src += 4)
++			*dst++ = (u16)(((src[0] >> 3) << 11) | ((src[1] >> 2) << 5) | (src[2] >> 3));
 +		const size_t z = ZSTD_compressCCtx(g_pcctx, g_picZ, kPicCap, g_picRaw, kPicRaw, 1);
 +		if (!ZSTD_isError(z)) {
 +			if (void *p = Alloc(z)) {
@@ -3496,7 +3580,6 @@ index 0000000..9a7eace
 +			}
 +		}
 +	}
-+	delete[] temp;
 +	g_picMs += (time_now_d() - start) * 1000.0;
 +	if (++g_picsTaken == 600) {
 +		size_t bytes = 0;
@@ -3615,12 +3698,12 @@ index 0000000..9a7eace
 +	return false;
 +}
 +
-+void M33Rewind_AfterFrame() {
++void M33Rewind_AfterFrame(Draw::DrawContext *draw) {
 +	if (!g_ready || g_rewinding)
 +		return;
 +	if (++g_picFrames >= kPicInterval) {
 +		g_picFrames = 0;
-+		TakePicture();
++		TakePicture(draw);
 +	}
 +}
 +
@@ -3682,13 +3765,18 @@ index 0000000..9a7eace
 +		g_tex->Release();
 +		g_tex = nullptr;
 +	}
++	if (g_picFbo) {
++		g_picFbo->Release();
++		g_picFbo = nullptr;
++	}
++	g_picReadValid = 0;
 +}
 diff --git a/ps4/PS4Rewind.h b/ps4/PS4Rewind.h
 new file mode 100644
-index 0000000..b65a84e
+index 0000000..9cac408
 --- /dev/null
 +++ b/ps4/PS4Rewind.h
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,33 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3708,13 +3796,14 @@ index 0000000..b65a84e
 +#pragma once
 +
 +class UIContext;
++namespace Draw { class DrawContext; }
 +struct Bounds;
 +
 +// Once per frame, before the emulator runs it: takes the snapshots, or, while L2 is held, goes
 +// back. True while going back: the emulator doesn't run then (the recorded pictures play).
 +bool M33Rewind_Frame(bool held);
 +// After a frame ran: records its picture.
-+void M33Rewind_AfterFrame();
++void M33Rewind_AfterFrame(Draw::DrawContext *draw);
 +// Whether it's going back right now (the sound is muted, the picture is M33Rewind_Draw's).
 +bool M33Rewind_Active();
 +// The picture going back, over the game's.

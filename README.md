@@ -29,8 +29,10 @@ Status: **v00.01 builds and packages; not yet tested on a console.**
   keeps the chosen resolution and FSR upscales from it.)
 - Rewind (`ps4/PS4Rewind.cpp`), as RetroArch's: hold L2 and the game plays backwards, let go and it
   carries on from the picture shown; hold again to go further back. While playing it records a
-  snapshot every 6 frames (only the newest whole, the older ones as zstd-compressed 2 KB-block
-  differences) and the screen every 2 frames (480x272 RGB565, zstd). Going back pauses the
+  snapshot every 10 frames (only the newest whole, the older ones as zstd-compressed 2 KB-block
+  differences) and the screen every 2 frames (480x272 RGB565, zstd; blitted down on the GPU and read back a few
+  frames late, so the emulator never waits for the GPU: a blocking readback cost 12-27 ms each and
+  made games like GTA fall behind, their sound with them). Going back pauses the
   emulator and plays those pictures backwards (1x, up to 3x held), walking the snapshots back with
   them; letting go loads one snapshot. All of it in its own block of direct memory (up to 640 MiB),
   never the app heap. Off in RetroAchievements hardcore mode.
