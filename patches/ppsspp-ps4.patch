@@ -910,7 +910,7 @@ index fbc9a46..87bc905 100644
  	virtual bool GetStencilbuffer(u32 fb_address, int fb_stride, GPUDebugBuffer &buffer);
  	virtual bool GetOutputFramebuffer(GPUDebugBuffer &buffer);
 diff --git a/GPU/Common/PresentationCommon.cpp b/GPU/Common/PresentationCommon.cpp
-index d541b43..49e6bb0 100644
+index d541b43..7b467df 100644
 --- a/GPU/Common/PresentationCommon.cpp
 +++ b/GPU/Common/PresentationCommon.cpp
 @@ -36,6 +36,7 @@
@@ -958,7 +958,7 @@ index d541b43..49e6bb0 100644
  		zoom = 1;
  
  	if (upscaling) {
-@@ -1045,3 +1061,269 @@ void PresentationCommon::CalculateRenderResolution(const DisplayLayoutConfig &co
+@@ -1045,3 +1061,273 @@ void PresentationCommon::CalculateRenderResolution(const DisplayLayoutConfig &co
  
  	*scaleFactor = zoom;
  }
@@ -982,6 +982,9 @@ index d541b43..49e6bb0 100644
 +//    disappearing, the HUD, a shift that's wrong) a plain cross-fade of the two frames instead.
 +// Both are post-processing shaders, compiled like PPSSPP's own; the result goes on through the
 +// post-processing (FSR's sharpening...) in place of the game's frame.
++
++// Frames made so far (the FPS counter shows how many a second, UI/DebugOverlay.cpp).
++int g_m33FramesMade = 0;
 +
 +static const char *const kFgVertex = R"(
 +#ifdef GL_ES
@@ -1215,6 +1218,7 @@ index d541b43..49e6bb0 100644
 +			// shown in the game's frame's place this refresh; the next one shows the game's frame
 +			SourceFramebuffer(fgOutFb_[slot], srcWidth_, srcHeight_);
 +			fgMadeCount_++;
++			g_m33FramesMade++;
 +		}
 +	}
 +	fgCur_ ^= 1;
@@ -1335,6 +1339,42 @@ index bab863f..19146b5 100644
  #endif
  	leftColumn->Add(new Choice(di->T("Disable All")))->OnClick.Handle(this, &CwCheatScreen::OnDisableAll);
  	leftColumn->Add(new PopupSliderChoice(&g_Config.iCwCheatRefreshIntervalMs, 1, 1000, 77, cw->T("Refresh interval"), 1, screenManager()))->SetFormat(di->T("%d ms"));
+diff --git a/UI/DebugOverlay.cpp b/UI/DebugOverlay.cpp
+index 0bf44c7..b95a88b 100644
+--- a/UI/DebugOverlay.cpp
++++ b/UI/DebugOverlay.cpp
+@@ -8,6 +8,7 @@
+ 
+ #include "Core/MIPS/MIPS.h"
+ #include "Core/HW/Display.h"
++#include "Common/TimeUtil.h"
+ #include "Core/FrameTiming.h"
+ #include "Core/HLE/sceSas.h"
+ #include "Core/HLE/sceKernel.h"
+@@ -510,6 +511,23 @@ void DrawFPS(UIContext *ctx, const Bounds &bounds) {
+ 			w.F("Speed: %0.1f%%", vps / (59.94f / 100.0f));
+ 		}
+ 	}
++#if PPSSPP_PLATFORM(PS4)
++	// M33: frame generation's frames, which the game's own count leaves out (GPU/Common/PresentationCommon.cpp)
++	{
++		extern int g_m33FramesMade;
++		static double since = 0.0;
++		static int counted = 0;
++		static float made = 0.0f;
++		const double now = time_now_d();
++		if (now - since >= 1.0) {
++			made = since > 0.0 ? (float)((g_m33FramesMade - counted) / (now - since)) : 0.0f;
++			counted = g_m33FramesMade;
++			since = now;
++		}
++		if (g_Config.bM33FrameGen && made >= 1.0f && (g_Config.iShowStatusFlags & (int)ShowStatusFlags::FPS_COUNTER))
++			w.F("  → %0.0f shown (+%0.0f generated)", actual_fps + made, made);
++	}
++#endif
+ 	if (System_GetPropertyBool(SYSPROP_CAN_READ_BATTERY_PERCENTAGE)) {
+ 		if (g_Config.iShowStatusFlags & (int)ShowStatusFlags::BATTERY_PERCENT) {
+ 			const int percentage = System_GetPropertyInt(SYSPROP_BATTERY_PERCENTAGE);
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
 index e1a8d56..0a99d94 100644
 --- a/UI/EmuScreen.cpp
