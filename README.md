@@ -27,6 +27,16 @@ Status: **v00.01 builds and packages; not yet tested on a console.**
   effects > Postprocessing shaders.
   (Stock PPSSPP renders at 1x under an upscaling filter, ignoring the rendering resolution; M33
   keeps the chosen resolution and FSR upscales from it.)
+- Quick menu (L3 + R3, `ps4/PS4QuickMenu.cpp`), made for the controller after Crema's in-game menu:
+  the paused game behind a dark panel sliding in from the left, rows with icons and a gliding
+  highlight, values changed with Left / Right. Resume, Save / Load State (by slot), 60 FPS, Cheats
+  (a page of their own: each on or off, the game's codes fetched from PPSSPP's CWCheat database),
+  Resolution, Game Volume, FPS Counter, Settings (PPSSPP's full settings), Display & Effects,
+  Restart Game, Exit. PPSSPP's own pause screen stays for the XMB.
+- 60 FPS (`ps4/PS4Cheats.cpp`): the game's "60 FPS" code from the database (GTA Liberty City
+  Stories, the God of War games, LittleBigPlanet...), the one for the disc's version, turned on with
+  its other frame-rate codes off. A 30 fps game drawing twice as many frames needs about twice the
+  emulation: the PS4 may not hold 60 in every game or scene.
 - Rewind (`ps4/PS4Rewind.cpp`), as RetroArch's: hold L2 and the game plays backwards, let go and it
   carries on from the picture shown; hold again to go further back. While playing it records a
   snapshot every 10 frames (only the newest whole, the older ones as zstd-compressed 2 KB-block
