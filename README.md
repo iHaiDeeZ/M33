@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iHaiDeeZ/M33/releases/latest"><img alt="Release 1.02" src="https://img.shields.io/badge/release-1.02-9b7bff"></a>
+  <a href="https://github.com/iHaiDeeZ/M33/releases/latest"><img alt="Release 1.03" src="https://img.shields.io/badge/release-1.03-9b7bff"></a>
   <img alt="PS4 homebrew" src="https://img.shields.io/badge/PS4-homebrew-1f5fd6">
   <img alt="PSP" src="https://img.shields.io/badge/PSP-PPSSPP-48e0ff">
   <a href="LICENSE"><img alt="GPL-2.0" src="https://img.shields.io/badge/license-GPL--2.0-ff8ad4"></a>
