@@ -1,3 +1,14 @@
+diff --git a/.gitignore b/.gitignore
+index 650ef17..a817f64 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -152,3 +152,6 @@ RAPrefs_PPSSPP.cfg
+ cmake-build-*/
+ 
+ /.vscode/
++
++# M33: fetched by scripts/clone-ppsspp.sh
++/ext/harfbuzz/
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 1e9b13e..f5c645f 100644
 --- a/CMakeLists.txt
@@ -6226,10 +6237,10 @@ index 0000000..1c86573
 +}
 diff --git a/ps4/PS4TextDrawer.cpp b/ps4/PS4TextDrawer.cpp
 new file mode 100644
-index 0000000..9950060
+index 0000000..970fbb6
 --- /dev/null
 +++ b/ps4/PS4TextDrawer.cpp
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,474 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -6244,16 +6255,22 @@ index 0000000..9950060
 +// A copy of the GPL 2.0 should have been included with the program.
 +// If not, see http://www.gnu.org/licenses/
 +
-+// M33: text on the PS4, through FreeType (PPSSPP's own copy, ext/freetype). Without a text drawer
-+// PPSSPP falls back to its small bitmap font, which only has Latin letters: Russian, Japanese,
-+// Chinese and Korean menus, and game titles in them, came out as "? ? ?".
++// M33: text on the PS4, through FreeType (PPSSPP's own copy, ext/freetype) and HarfBuzz
++// (ext/harfbuzz). Without a text drawer PPSSPP falls back to its small bitmap font, which only has
++// Latin letters: Russian, Japanese, Chinese and Korean menus, and game titles in them, came out as
++// "? ? ?".
 +//
 +// The UI font is PPSSPP's own (Roboto Condensed, from the assets: Latin, Turkish, Polish, Cyrillic,
 +// Greek). A character it doesn't have comes from the first fallback that has it: the PS4's own
-+// system fonts (/preinst/common/font: SST, SSTJpPro, DFHEI5 for Chinese, SCEPS4Yoongd for Korean),
-+// then the Noto Sans CJK fonts in the package (assets/fonts), in case the system ones can't be read.
-+// The current language's CJK font goes first, so Han characters take that language's shapes.
-+// Bold fallback characters are FreeType's emboldening. Left to right only (none of M33's languages needs shaping).
++// system fonts (/preinst/common/font: SSTJpPro, DFHEI5 for Chinese, SCEPS4Yoongd for Korean, SST),
++// the Noto Sans CJK fonts in the package (assets/fonts) where the system ones can't be read, and the
++// package's Noto Sans Arabic, Hebrew, Thai, Khmer and Lao (and Symbols 2: ☐ ✕), which the PS4 doesn't have. The current
++// language's CJK font goes first, so Han characters take that language's shapes.
++//
++// HarfBuzz shapes each run of text in one font: Arabic letters joined, Thai, Khmer and Lao marks in
++// place. Lines with Arabic or Hebrew are put in order by a small version of the bidi rules: runs of
++// right-to-left text read right to left, numbers and Latin words in them left to right.
++// Bold fallback characters are FreeType's emboldening (the UI font has its own bold file).
 +
 +#include <algorithm>
 +#include <cstring>
@@ -6267,6 +6284,9 @@ index 0000000..9950060
 +#include FT_FREETYPE_H
 +#include FT_SYNTHESIS_H
 +
++#include <hb.h>
++#include <hb-ft.h>
++
 +#include "Common/Data/Encoding/Utf8.h"
 +#include "Common/File/VFS/VFS.h"
 +#include "Common/GPU/thin3d.h"
@@ -6279,9 +6299,15 @@ index 0000000..9950060
 +
 +struct Face {
 +	FT_Face face = nullptr;
-+	std::vector<uint8_t> data;  // (FreeType reads the font from this memory)
++	std::vector<uint8_t> data;  // (FreeType reads a font loaded from the VFS from this memory)
 +	std::string name;
 +};
++
++enum Dir { NEUTRAL, LTR, RTL };
++
++bool IsRtl(uint32_t c) {
++	return (c >= 0x0590 && c <= 0x08FF) || (c >= 0xFB1D && c <= 0xFDFF) || (c >= 0xFE70 && c <= 0xFEFF);
++}
 +
 +class TextDrawerPS4 : public TextDrawer {
 +public:
@@ -6290,11 +6316,13 @@ index 0000000..9950060
 +			ERROR_LOG(Log::G3D, "M33 text: FreeType didn't start");
 +			lib_ = nullptr;
 +		}
++		buf_ = hb_buffer_create();
 +		dpiScale_ = CalculateDPIScale();
 +	}
 +	~TextDrawerPS4() override {
 +		ClearCache();
 +		ClearFonts();
++		hb_buffer_destroy(buf_);
 +		if (lib_)
 +			FT_Done_FreeType(lib_);
 +	}
@@ -6330,12 +6358,15 @@ index 0000000..9950060
 +protected:
 +	void MeasureStringInternal(std::string_view str, float *w, float *h) override {
 +		Layout layout;
-+		DoLayout(str, &layout, false);
++		DoLayout(str, &layout);
 +		*w = (float)std::max(1, layout.width);
 +		*h = (float)std::max(1, layout.height);
 +	}
 +	bool SupportsColorEmoji() const override { return false; }
 +	void ClearFonts() override {
++		for (auto &h : hb_)
++			hb_font_destroy(h.second);  // (before the faces: each holds a reference to its face)
++		hb_.clear();
 +		for (auto &p : primary_)
 +			if (p.second->face)
 +				FT_Done_Face(p.second->face);
@@ -6353,7 +6384,7 @@ index 0000000..9950060
 +	struct Glyph {
 +		FT_Face face;
 +		FT_UInt index;
-+		int x;  // pen position on its line
++		int x, y;  // on its line, from the pen position and the baseline (up)
 +	};
 +	struct Line {
 +		std::vector<Glyph> glyphs;
@@ -6365,27 +6396,36 @@ index 0000000..9950060
 +	};
 +
 +	void LoadFallbacks();
-+	FT_Face FaceFor(uint32_t c, FT_UInt *index);
++	FT_Face FaceFor(uint32_t c);
++	hb_font_t *HbFor(FT_Face face) {
++		auto it = hb_.find(face);
++		if (it == hb_.end())
++			it = hb_.emplace(face, hb_ft_font_create_referenced(face)).first;
++		return it->second;
++	}
 +	void SetSize(FT_Face face) {
 +		FT_Set_Pixel_Sizes(face, 0, px_);
 +	}
-+	bool LoadGlyph(FT_Face face, FT_UInt index, bool render) {
++	bool LoadGlyph(FT_Face face, FT_UInt index) {
 +		SetSize(face);
 +		if (FT_Load_Glyph(face, index, FT_LOAD_DEFAULT | FT_LOAD_TARGET_NORMAL) != 0)
 +			return false;
-+		if (bold_ && face != cur_)  // (the UI font has its own bold file)
++		if (bold_ && face != cur_)
 +			FT_GlyphSlot_Embolden(face->glyph);
-+		if (render && face->glyph->format != FT_GLYPH_FORMAT_BITMAP)
++		if (face->glyph->format != FT_GLYPH_FORMAT_BITMAP)
 +			return FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL) == 0;
 +		return true;
 +	}
-+	void DoLayout(std::string_view str, Layout *layout, bool keepGlyphs);
++	void LayoutLine(const std::vector<uint32_t> &text, Line *line, int *ascent, int *descent);
++	void DoLayout(std::string_view str, Layout *layout);
 +
 +	FT_Library lib_ = nullptr;
++	hb_buffer_t *buf_ = nullptr;
 +	std::map<std::string, std::unique_ptr<Face>> primary_;
 +	std::vector<std::unique_ptr<Face>> fallbacks_;
 +	bool fallbacksLoaded_ = false;
-+	std::unordered_map<uint32_t, int> glyphFace_;  // character -> fallback (-1: the UI font, -2: none)
++	std::unordered_map<uint32_t, int> glyphFace_;  // character -> fallback (-2: none has it)
++	std::unordered_map<FT_Face, hb_font_t *> hb_;
 +	FT_Face cur_ = nullptr;
 +	int px_ = 16;
 +	bool bold_ = false;
@@ -6394,7 +6434,7 @@ index 0000000..9950060
 +void TextDrawerPS4::LoadFallbacks() {
 +	fallbacksLoaded_ = true;
 +	const std::string lang = g_Config.sLanguageIni;
-+	const char *sys = "/preinst/common/font/";
++	const std::string sys = "/preinst/common/font/";
 +	// Japanese, Chinese, Korean: the current language's first (its Han shapes)
 +	std::vector<std::pair<std::string, std::string>> cjk = {
 +		{ "ja", "SSTJpPro-Regular.otf" }, { "zh", "DFHEI5-SONY.ttf" }, { "ko", "SCEPS4Yoongd-Medium.otf" },
@@ -6418,6 +6458,8 @@ index 0000000..9950060
 +		return false;
 +	};
 +	auto addAsset = [&](const std::string &path) {
++		if (addFile("/app0/assets/" + path))  // read from the package as needed
++			return true;
 +		auto face = std::make_unique<Face>();
 +		face->name = path;
 +		size_t size = 0;
@@ -6432,24 +6474,28 @@ index 0000000..9950060
 +		return true;
 +	};
 +	int system = 0, packaged = 0;
-+	// The packaged font only where the console's own can't be opened (17 MB we'd rather not hold),
-+	// and read from the package as needed rather than all at once
++	// The packaged CJK font only where the console's own can't be opened (17 MB we'd rather not hold)
 +	for (size_t i = 0; i < cjk.size(); i++) {
 +		if (addFile(sys + cjk[i].second))
 +			system++;
-+		else if (addFile("/app0/assets/" + bundled[i].second) || addAsset(bundled[i].second))
++		else if (addAsset(bundled[i].second))
 +			packaged++;
 +	}
-+	system += addFile(std::string(sys) + "SST-Roman.otf");
++	system += addFile(sys + "SST-Roman.otf");
++	// Scripts the PS4 has no font for (its SSTArabic lacks Kurdish and Persian letters)
++	for (const char *f : { "fonts/NotoSansArabic-Regular.ttf", "fonts/NotoSansHebrew-Regular.ttf", "fonts/NotoSansThai-Regular.ttf",
++		"fonts/NotoSansKhmer-Regular.ttf", "fonts/NotoSansLao-Regular.ttf", "fonts/NotoSansSymbols2-Regular.ttf" }) {
++		if (addAsset(f))
++			packaged++;
++		else
++			ERROR_LOG(Log::G3D, "M33 text: couldn't load %s", f);
++	}
 +	NOTICE_LOG(Log::G3D, "M33 text: %d system fonts, %d packaged ones as fallbacks (language %s)", system, packaged, lang.c_str());
 +}
 +
-+FT_Face TextDrawerPS4::FaceFor(uint32_t c, FT_UInt *index) {
-+	if (cur_) {
-+		*index = FT_Get_Char_Index(cur_, c);
-+		if (*index)
-+			return cur_;
-+	}
++FT_Face TextDrawerPS4::FaceFor(uint32_t c) {
++	if (cur_ && FT_Get_Char_Index(cur_, c))
++		return cur_;
 +	auto it = glyphFace_.find(c);
 +	if (it == glyphFace_.end()) {
 +		if (!fallbacksLoaded_)
@@ -6463,46 +6509,146 @@ index 0000000..9950060
 +		}
 +		it = glyphFace_.emplace(c, found).first;
 +	}
-+	if (it->second >= 0) {
-+		FT_Face face = fallbacks_[it->second]->face;
-+		*index = FT_Get_Char_Index(face, c);
-+		return face;
-+	}
-+	*index = 0;  // the UI font's "missing" box
-+	return cur_;
++	return it->second >= 0 ? fallbacks_[it->second]->face : cur_;  // (cur_: its "missing" box)
 +}
 +
-+void TextDrawerPS4::DoLayout(std::string_view str, Layout *layout, bool keepGlyphs) {
++void TextDrawerPS4::LayoutLine(const std::vector<uint32_t> &text, Line *line, int *ascent, int *descent) {
++	const size_t n = text.size();
++	if (!n)
++		return;
++	hb_unicode_funcs_t *ucd = hb_unicode_funcs_get_default();
++	auto isMark = [&](uint32_t c) {
++		const hb_unicode_general_category_t g = hb_unicode_general_category(ucd, c);
++		return g == HB_UNICODE_GENERAL_CATEGORY_NON_SPACING_MARK || g == HB_UNICODE_GENERAL_CATEGORY_SPACING_MARK ||
++			g == HB_UNICODE_GENERAL_CATEGORY_ENCLOSING_MARK || c == 0x200C || c == 0x200D;
++	};
++	auto isNeutral = [&](uint32_t c) {
++		switch (hb_unicode_general_category(ucd, c)) {
++		case HB_UNICODE_GENERAL_CATEGORY_SPACE_SEPARATOR: case HB_UNICODE_GENERAL_CATEGORY_CONTROL:
++		case HB_UNICODE_GENERAL_CATEGORY_CONNECT_PUNCTUATION: case HB_UNICODE_GENERAL_CATEGORY_DASH_PUNCTUATION:
++		case HB_UNICODE_GENERAL_CATEGORY_CLOSE_PUNCTUATION: case HB_UNICODE_GENERAL_CATEGORY_FINAL_PUNCTUATION:
++		case HB_UNICODE_GENERAL_CATEGORY_INITIAL_PUNCTUATION: case HB_UNICODE_GENERAL_CATEGORY_OTHER_PUNCTUATION:
++		case HB_UNICODE_GENERAL_CATEGORY_OPEN_PUNCTUATION: case HB_UNICODE_GENERAL_CATEGORY_MATH_SYMBOL:
++		case HB_UNICODE_GENERAL_CATEGORY_OTHER_SYMBOL: case HB_UNICODE_GENERAL_CATEGORY_MODIFIER_SYMBOL:
++		case HB_UNICODE_GENERAL_CATEGORY_CURRENCY_SYMBOL:
++			return true;
++		default:
++			return false;
++		}
++	};
++
++	// Each character's font and direction. Marks and punctuation stay in the font of the letter
++	// before them where it has them, so a word is shaped in one piece.
++	std::vector<FT_Face> faces(n);
++	std::vector<Dir> dirs(n);
++	Dir para = NEUTRAL;
++	for (size_t i = 0; i < n; i++) {
++		const uint32_t c = text[i];
++		const bool mark = isMark(c);
++		dirs[i] = mark ? (i ? dirs[i - 1] : NEUTRAL) : IsRtl(c) ? RTL : isNeutral(c) ? NEUTRAL : LTR;
++		if (para == NEUTRAL && dirs[i] != NEUTRAL)
++			para = dirs[i];
++		if ((mark || dirs[i] == NEUTRAL) && i && faces[i - 1] && FT_Get_Char_Index(faces[i - 1], c))
++			faces[i] = faces[i - 1];
++		else
++			faces[i] = FaceFor(c);
++	}
++	if (para == NEUTRAL)
++		para = LTR;
++	// Spaces and punctuation between two letters of one direction take it, else the line's
++	for (size_t i = 0; i < n;) {
++		if (dirs[i] != NEUTRAL) {
++			i++;
++			continue;
++		}
++		size_t j = i;
++		while (j < n && dirs[j] == NEUTRAL)
++			j++;
++		const Dir before = i ? dirs[i - 1] : para, after = j < n ? dirs[j] : para;
++		std::fill(dirs.begin() + i, dirs.begin() + j, before == after ? before : para);
++		i = j;
++	}
++
++	// Runs of one direction and font, in reading order; then in the order they're seen
++	struct Run {
++		size_t start, len;
++		Dir dir;
++		FT_Face face;
++	};
++	std::vector<Run> runs;
++	for (size_t i = 0; i < n;) {
++		size_t j = i + 1;
++		while (j < n && dirs[j] == dirs[i] && faces[j] == faces[i])
++			j++;
++		runs.push_back({ i, j - i, dirs[i], faces[i] });
++		i = j;
++	}
++	std::vector<Run> visual;
++	for (size_t i = 0; i < runs.size();) {
++		size_t j = i + 1;
++		while (j < runs.size() && runs[j].dir == runs[i].dir)
++			j++;
++		std::vector<Run> group(runs.begin() + i, runs.begin() + j);
++		if (runs[i].dir == RTL)
++			std::reverse(group.begin(), group.end());
++		if (para == RTL)
++			visual.insert(visual.begin(), group.begin(), group.end());
++		else
++			visual.insert(visual.end(), group.begin(), group.end());
++		i = j;
++	}
++
++	hb_position_t pen = 0;  // 26.6
++	for (const Run &run : visual) {
++		if (!run.face)
++			continue;
++		SetSize(run.face);
++		const FT_Size_Metrics &m = run.face->size->metrics;
++		*ascent = std::max(*ascent, (int)((m.ascender + 63) >> 6));
++		*descent = std::max(*descent, (int)((-m.descender + 63) >> 6));
++		hb_font_t *font = HbFor(run.face);
++		hb_ft_font_changed(font);
++		hb_buffer_reset(buf_);
++		hb_buffer_add_utf32(buf_, text.data(), (int)n, (unsigned)run.start, (int)run.len);
++		hb_buffer_set_direction(buf_, run.dir == RTL ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
++		hb_buffer_guess_segment_properties(buf_);
++		hb_shape(font, buf_, nullptr, 0);
++		unsigned count = 0;
++		const hb_glyph_info_t *info = hb_buffer_get_glyph_infos(buf_, &count);
++		const hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(buf_, &count);
++		for (unsigned g = 0; g < count; g++) {
++			line->glyphs.push_back({ run.face, info[g].codepoint, (int)((pen + pos[g].x_offset + 32) >> 6), (int)((pos[g].y_offset + 32) >> 6) });
++			pen += pos[g].x_advance;
++		}
++	}
++	line->width = (int)((pen + 63) >> 6);
++}
++
++void TextDrawerPS4::DoLayout(std::string_view str, Layout *layout) {
 +	if (!cur_)
 +		return;
 +	SetSize(cur_);
 +	const FT_Size_Metrics &m = cur_->size->metrics;
-+	layout->ascent = (int)((m.ascender + 63) >> 6);
-+	layout->lineHeight = std::max(1, (int)((m.ascender - m.descender + 63) >> 6));
++	int ascent = (int)((m.ascender + 63) >> 6), descent = (int)((-m.descender + 63) >> 6);
 +	std::vector<std::string_view> lines;
 +	SplitString(str, '\n', lines);
 +	if (lines.empty())
 +		lines.push_back(std::string_view());
-+	for (std::string_view text : lines) {
-+		Line line;
-+		int pen = 0;
-+		UTF8 decoder(text);
++	for (std::string_view textLine : lines) {
++		std::vector<uint32_t> text;
++		UTF8 decoder(textLine);
 +		while (!decoder.end()) {
 +			const uint32_t c = decoder.next();
-+			if (c == '\r')
-+				continue;
-+			FT_UInt index = 0;
-+			FT_Face face = FaceFor(c, &index);
-+			if (!face || !LoadGlyph(face, index, false))
-+				continue;
-+			if (keepGlyphs)
-+				line.glyphs.push_back({ face, index, pen });
-+			pen += (int)((face->glyph->advance.x + 32) >> 6);
++			if (c != '\r')
++				text.push_back(c);
 +		}
-+		line.width = pen;
-+		layout->width = std::max(layout->width, pen);
++		Line line;
++		LayoutLine(text, &line, &ascent, &descent);
++		layout->width = std::max(layout->width, line.width);
 +		layout->lines.push_back(std::move(line));
 +	}
++	layout->ascent = ascent;
++	layout->lineHeight = std::max(1, ascent + descent);
 +	layout->height = layout->lineHeight * (int)layout->lines.size();
 +}
 +
@@ -6512,7 +6658,7 @@ index 0000000..9950060
 +		return false;
 +	}
 +	Layout layout;
-+	DoLayout(str, &layout, true);
++	DoLayout(str, &layout);
 +	const int w = (std::max(1, layout.width) + 3) & ~3, h = std::max(1, layout.height);
 +	std::vector<uint8_t> alpha((size_t)w * h, 0);
 +	for (size_t li = 0; li < layout.lines.size(); li++) {
@@ -6524,13 +6670,13 @@ index 0000000..9950060
 +			x0 = w - line.width;
 +		const int baseline = (int)li * layout.lineHeight + layout.ascent;
 +		for (const Glyph &g : line.glyphs) {
-+			if (!LoadGlyph(g.face, g.index, true))
++			if (!LoadGlyph(g.face, g.index))
 +				continue;
 +			const FT_GlyphSlot slot = g.face->glyph;
 +			const FT_Bitmap &bm = slot->bitmap;
 +			if (bm.pixel_mode != FT_PIXEL_MODE_GRAY)
 +				continue;
-+			const int gx = x0 + g.x + slot->bitmap_left, gy = baseline - slot->bitmap_top;
++			const int gx = x0 + g.x + slot->bitmap_left, gy = baseline - g.y - slot->bitmap_top;
 +			for (unsigned y = 0; y < bm.rows; y++) {
 +				const int ty = gy + (int)y;
 +				if (ty < 0 || ty >= h)
@@ -7498,10 +7644,10 @@ index 0000000..1ba337d
 +bool M33Fw_TakeDirect(const std::string &disc);
 diff --git a/ps4/ps4.cmake b/ps4/ps4.cmake
 new file mode 100644
-index 0000000..3577617
+index 0000000..407ae6f
 --- /dev/null
 +++ b/ps4/ps4.cmake
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,57 @@
 +# M33: PPSSPP's PS4 frontend, included from the top CMakeLists.txt once ${TargetBin} exists.
 +# Built with M33's toolchain (toolchain/ps4-m33.cmake, and ps4-love-style.cmake as the project
 +# include: PS4_RUNTIME_SOURCES, ps4_link_mesa, ps4_add_eboot).
@@ -7545,6 +7691,14 @@ index 0000000..3577617
 +# Text in every language (ps4/PS4TextDrawer.cpp): PPSSPP's own FreeType
 +target_include_directories(${TargetBin} PRIVATE ${CMAKE_SOURCE_DIR}/ext/freetype/include)
 +target_link_libraries(${TargetBin} freetype)
++# and HarfBuzz to shape it (joined Arabic letters, right to left, Thai/Khmer/Lao marks), one file
++add_library(m33harfbuzz STATIC ${CMAKE_SOURCE_DIR}/ext/harfbuzz/src/harfbuzz.cc)
++target_compile_definitions(m33harfbuzz PRIVATE HAVE_FREETYPE=1 HB_NO_MT)
++target_include_directories(m33harfbuzz PRIVATE ${CMAKE_SOURCE_DIR}/ext/freetype/include)
++target_compile_options(m33harfbuzz PRIVATE -fno-exceptions -fno-rtti -w)
++target_link_libraries(m33harfbuzz freetype)
++target_include_directories(${TargetBin} PRIVATE ${CMAKE_SOURCE_DIR}/ext/harfbuzz/src)
++target_link_libraries(${TargetBin} m33harfbuzz)
 +
 +# RADV on GNM, the system libraries, and eboot.bin
 +ps4_link_mesa(${TargetBin})

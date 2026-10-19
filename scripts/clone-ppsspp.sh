@@ -15,3 +15,9 @@ if [ -n "$BASE" ]; then
 fi
 git submodule update --init --recursive
 git log -1 --format='%h %ci %s' && git submodule status
+# HarfBuzz (text shaping for M33's text drawer: Arabic, Hebrew, Thai, Khmer, Lao), as released
+if [ ! -f ext/harfbuzz/src/harfbuzz.cc ]; then
+    mkdir -p ext/harfbuzz
+    curl -sSLf https://github.com/harfbuzz/harfbuzz/releases/download/10.1.0/harfbuzz-10.1.0.tar.xz \
+        | tar -xJ -C ext/harfbuzz --strip-components=1 harfbuzz-10.1.0/src harfbuzz-10.1.0/COPYING
+fi
