@@ -1877,7 +1877,7 @@ index 03d80c5..99e25b5 100644
  	if (!portrait) {
  		parent->Add(new Spacer(16.0));
 diff --git a/UI/MiscScreens.cpp b/UI/MiscScreens.cpp
-index 6cd4394..4f27568 100644
+index 6cd4394..be18000 100644
 --- a/UI/MiscScreens.cpp
 +++ b/UI/MiscScreens.cpp
 @@ -60,6 +60,9 @@
@@ -1890,7 +1890,17 @@ index 6cd4394..4f27568 100644
  
  void HandleCommonMessages(UIMessage message, const char *value, ScreenManager *manager, const Screen *activeScreen) {
  	bool isActiveScreen = manager->topScreen() == activeScreen;
-@@ -360,6 +363,9 @@ void NewLanguageScreen::OnCompleted(DialogResult result) {
+@@ -288,7 +291,8 @@ NewLanguageScreen::NewLanguageScreen(std::string_view title) : ListPopupScreen(t
+ 
+ 		// We only support Arabic on platforms where we have support for the native text rendering
+ 		// APIs, as proper Arabic support is way too difficult to implement ourselves.
+-#if !(PPSSPP_PLATFORM(WINDOWS) || PPSSPP_PLATFORM(ANDROID))
++		// (M33: the PS4 has it, ps4/PS4TextDrawer.cpp shapes it with HarfBuzz.)
++#if !(PPSSPP_PLATFORM(WINDOWS) || PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(PS4))
+ 		if (tempLangs[i].name.find("ar_AE") != std::string::npos) {
+ 			continue;
+ 		}
+@@ -360,6 +364,9 @@ void NewLanguageScreen::OnCompleted(DialogResult result) {
  }
  
  void LogoScreen::Next() {
@@ -1900,7 +1910,7 @@ index 6cd4394..4f27568 100644
  	if (!switched_) {
  		switched_ = true;
  		Path gamePath = boot_filename;
-@@ -388,7 +394,12 @@ void LogoScreen::Next() {
+@@ -388,7 +395,12 @@ void LogoScreen::Next() {
  	}
  }
  
@@ -1913,7 +1923,7 @@ index 6cd4394..4f27568 100644
  
  LogoScreen::LogoScreen(AfterLogoScreen afterLogoScreen)
  	: afterLogoScreen_(afterLogoScreen) {
-@@ -431,6 +442,11 @@ void LogoScreen::DrawForeground(UIContext &dc) {
+@@ -431,6 +443,11 @@ void LogoScreen::DrawForeground(UIContext &dc) {
  	using namespace Draw;
  
  	const Bounds &bounds = GetLayoutBounds(dc);
@@ -1925,7 +1935,7 @@ index 6cd4394..4f27568 100644
  
  	dc.Begin();
  
-@@ -555,6 +571,17 @@ void CreditsScreen::CreateDialogViews(UI::ViewGroup *parent) {
+@@ -555,6 +572,17 @@ void CreditsScreen::CreateDialogViews(UI::ViewGroup *parent) {
  	}
  
  	int rightYOffset = 0;
@@ -1943,7 +1953,7 @@ index 6cd4394..4f27568 100644
  	if (!System_GetPropertyBool(SYSPROP_APP_GOLD)) {
  		ScreenManager *sm = screenManager();
  		Choice *gold = new Choice(mm->T("Buy PPSSPP Gold"));
-@@ -742,7 +769,13 @@ void CreditsScroller::Draw(UIContext &dc) {
+@@ -742,7 +770,13 @@ void CreditsScroller::Draw(UIContext &dc) {
  
  	// TODO: This is kinda ugly, done on every frame...
  	char temp[256];
