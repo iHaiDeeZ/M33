@@ -506,6 +506,30 @@ index 60321e2..99405a8 100644
  	return naettCurlLoad() != 0;
  #else
  	return true;
+diff --git a/Common/Render/Text/draw_text.cpp b/Common/Render/Text/draw_text.cpp
+index 254cb7a..44b3aa1 100644
+--- a/Common/Render/Text/draw_text.cpp
++++ b/Common/Render/Text/draw_text.cpp
+@@ -294,6 +294,10 @@ size_t TextDrawer::GetCacheDataSize() const {
+ 	return sz;
+ }
+ 
++#if PPSSPP_PLATFORM(PS4)
++TextDrawer *CreateTextDrawerPS4(Draw::DrawContext *draw);  // ps4/PS4TextDrawer.cpp
++#endif
++
+ TextDrawer *TextDrawer::Create(Draw::DrawContext *draw) {
+ 	TextDrawer *drawer = nullptr;
+ #if defined(__LIBRETRO__)
+@@ -313,6 +317,8 @@ TextDrawer *TextDrawer::Create(Draw::DrawContext *draw) {
+ 	drawer = new TextDrawerCocoa(draw);
+ #elif PPSSPP_PLATFORM(ANDROID)
+ 	drawer = new TextDrawerAndroid(draw);
++#elif PPSSPP_PLATFORM(PS4)
++	drawer = CreateTextDrawerPS4(draw);  // M33: FreeType with the PS4's fonts
+ #elif USE_SDL3_TTF
+ 	drawer = new TextDrawerSDL(draw);
+ #endif
 diff --git a/Common/Thread/ThreadUtil.cpp b/Common/Thread/ThreadUtil.cpp
 index e842a03..2f182b8 100644
 --- a/Common/Thread/ThreadUtil.cpp
@@ -1775,16 +1799,26 @@ index b205c73..80e8219 100644
  			bool isSaveData = false;
  			// Check if eboot directory. TODO: Should ideally be done off-thread somehow.
 diff --git a/UI/GameSettingsScreen.cpp b/UI/GameSettingsScreen.cpp
-index 4df7018..d0003d5 100644
+index 4df7018..939e590 100644
 --- a/UI/GameSettingsScreen.cpp
 +++ b/UI/GameSettingsScreen.cpp
-@@ -438,6 +438,10 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
+@@ -43,6 +43,9 @@
+ #include "Common/Data/Encoding/Utf8.h"
+ #include "Common/UI/PopupScreens.h"
+ #include "UI/EmuScreen.h"
++#if PPSSPP_PLATFORM(PS4)
++#include "ps4/PS4Lang.h"
++#endif
+ #include "UI/GameSettingsScreen.h"
+ #include "UI/GameInfoCache.h"
+ #include "UI/GamepadEmu.h"
+@@ -438,6 +441,10 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
  	}
  
  	graphicsSettings->Add(new ItemHeader(gr->T("Frame Rate Control")));
 +#if PPSSPP_PLATFORM(PS4)
 +	// M33: frame generation, 30 -> 60 (GPU/Common/PresentationCommon.cpp)
-+	graphicsSettings->Add(new CheckBox(&g_Config.bM33FrameGen, gr->T("M33FrameGen", "Frame generation (30 to 60 FPS, experimental)")));
++	graphicsSettings->Add(new CheckBox(&g_Config.bM33FrameGen, gr->T("M33FrameGen", M33T("Frame generation (30 to 60 FPS, experimental)"))));
 +#endif
  	static const char *frameSkip[] = {"Off", "1", "2", "3", "4", "5", "6", "7", "8"};
  	PopupMultiChoice *frameSkipping = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iFrameSkip, gr->T("Frame Skipping"), frameSkip, 0, ARRAY_SIZE(frameSkip), I18NCat::GRAPHICS, screenManager()));
@@ -2031,7 +2065,7 @@ index 3430114..5b1349b 100644
  	{"I_FOLDER", false},
  	{"I_UP_DIRECTORY", false},
 diff --git a/ext/CMakeLists.txt b/ext/CMakeLists.txt
-index b8607ef..6e6973e 100644
+index b8607ef..79da5ed 100644
 --- a/ext/CMakeLists.txt
 +++ b/ext/CMakeLists.txt
 @@ -29,7 +29,15 @@ add_subdirectory(cmake/cpu_features EXCLUDE_FROM_ALL)
@@ -2060,6 +2094,24 @@ index b8607ef..6e6973e 100644
  	list(APPEND aemu_postoffice_client_obj
  		aemu_postoffice/client/sock_impl_linux.c
  	)
+@@ -80,8 +88,15 @@ set(FT_REQUIRE_BZIP2 OFF CACHE BOOL "" FORCE)
+ set(FT_REQUIRE_PNG OFF CACHE BOOL "" FORCE)
+ set(FT_REQUIRE_HARFBUZZ OFF CACHE BOOL "" FORCE)
+ set(FT_REQUIRE_BROTLI OFF CACHE BOOL "" FORCE)
+-# Only AtlasTool uses FreeType.
+-if(ATLAS_TOOL AND NOT USE_SYSTEM_FREETYPE)
++# Only AtlasTool uses FreeType (and M33's PS4 text drawer, ps4/PS4TextDrawer.cpp).
++if(PS4)
++    set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)
++    set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
++    set(FT_DISABLE_PNG ON CACHE BOOL "" FORCE)
++    set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
++    set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
++endif()
++if((ATLAS_TOOL OR PS4) AND NOT USE_SYSTEM_FREETYPE)
+     add_subdirectory(freetype freetype-build)
+ endif()
+ 
 diff --git a/ext/naett-build/CMakeLists.txt b/ext/naett-build/CMakeLists.txt
 index 526dd51..f3f9533 100644
 --- a/ext/naett-build/CMakeLists.txt
@@ -3318,6 +3370,116 @@ index 0000000..4cd600c
 +void Update();
 +
 +}  // namespace PS4Keyboard
+diff --git a/ps4/PS4Lang.cpp b/ps4/PS4Lang.cpp
+new file mode 100644
+index 0000000..83bb348
+--- /dev/null
++++ b/ps4/PS4Lang.cpp
+@@ -0,0 +1,92 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++#include <cstring>
++#include <string>
++
++#include "Common/StringUtils.h"
++#include "Core/Config.h"
++#include "ps4/PS4Lang.h"
++
++namespace {
++
++enum Lang { ES, FR, DE, IT, PT, NL, PL, TR, RU, JA, ZH, TW, KO, LANG_COUNT };
++
++struct Row {
++	const char *en;
++	const char *t[LANG_COUNT];
++};
++
++// es, fr, de, it, pt, nl, pl, tr, ru, ja, zh (simplified), tw (traditional), ko
++const Row kRows[] = {
++	{ "Resume", { "Continuar", "Reprendre", "Fortsetzen", "Riprendi", "Continuar", "Hervatten", "Wznów", "Devam et", "Продолжить", "ゲームに戻る", "继续游戏", "繼續遊戲", "계속하기" } },
++	{ "Save State", { "Guardar estado", "Sauvegarder l'état", "Zustand speichern", "Salva stato", "Salvar estado", "Status opslaan", "Zapisz stan", "Durumu kaydet", "Сохранить состояние", "ステートセーブ", "即时存档", "即時存檔", "상태 저장" } },
++	{ "Load State", { "Cargar estado", "Charger l'état", "Zustand laden", "Carica stato", "Carregar estado", "Status laden", "Wczytaj stan", "Durumu yükle", "Загрузить состояние", "ステートロード", "即时读档", "即時讀檔", "상태 불러오기" } },
++	{ "Rewind (L2)", { "Rebobinar (L2)", "Rembobiner (L2)", "Zurückspulen (L2)", "Riavvolgi (L2)", "Retroceder (L2)", "Terugspoelen (L2)", "Przewijanie (L2)", "Geri sar (L2)", "Перемотка назад (L2)", "巻き戻し (L2)", "倒带 (L2)", "倒帶 (L2)", "되감기 (L2)" } },
++	{ "Frame Generation", { "Generación de fotogramas", "Génération d'images", "Bildgenerierung", "Generazione fotogrammi", "Geração de quadros", "Framegeneratie", "Generowanie klatek", "Kare üretimi", "Генерация кадров", "フレーム生成", "帧生成", "影格生成", "프레임 생성" } },
++	{ "Cheats", { "Trucos", "Codes de triche", "Cheats", "Trucchi", "Trapaças", "Cheats", "Kody", "Hileler", "Читы", "チート", "金手指", "金手指", "치트" } },
++	{ "Resolution", { "Resolución", "Résolution", "Auflösung", "Risoluzione", "Resolução", "Resolutie", "Rozdzielczość", "Çözünürlük", "Разрешение", "解像度", "分辨率", "解析度", "해상도" } },
++	{ "Game Volume", { "Volumen del juego", "Volume du jeu", "Spiellautstärke", "Volume del gioco", "Volume do jogo", "Spelvolume", "Głośność gry", "Oyun sesi", "Громкость игры", "ゲーム音量", "游戏音量", "遊戲音量", "게임 음량" } },
++	{ "FPS Counter", { "Contador de FPS", "Compteur de FPS", "FPS-Anzeige", "Contatore FPS", "Contador de FPS", "FPS-teller", "Licznik FPS", "FPS sayacı", "Счётчик FPS", "FPS表示", "FPS 计数器", "FPS 計數器", "FPS 표시" } },
++	{ "Settings", { "Ajustes", "Paramètres", "Einstellungen", "Impostazioni", "Configurações", "Instellingen", "Ustawienia", "Ayarlar", "Настройки", "設定", "设置", "設定", "설정" } },
++	{ "Display & Effects", { "Pantalla y efectos", "Affichage et effets", "Anzeige & Effekte", "Schermo ed effetti", "Tela e efeitos", "Beeld en effecten", "Obraz i efekty", "Görüntü ve efektler", "Экран и эффекты", "画面とエフェクト", "显示与效果", "顯示與效果", "화면 및 효과" } },
++	{ "Restart Game", { "Reiniciar juego", "Redémarrer le jeu", "Spiel neu starten", "Riavvia gioco", "Reiniciar jogo", "Spel herstarten", "Uruchom grę ponownie", "Oyunu yeniden başlat", "Перезапустить игру", "ゲームをリセット", "重新开始游戏", "重新開始遊戲", "게임 재시작" } },
++	{ "Exit to M33", { "Salir a M33", "Quitter vers M33", "Zurück zu M33", "Esci a M33", "Sair para o M33", "Terug naar M33", "Wyjdź do M33", "M33'e dön", "Выйти в M33", "M33に戻る", "退出到 M33", "退出到 M33", "M33으로 나가기" } },
++	{ "Downloading the cheat database...", { "Descargando la base de datos de trucos...", "Téléchargement de la base de codes...", "Cheat-Datenbank wird heruntergeladen...", "Download del database dei trucchi...", "Baixando o banco de dados de trapaças...", "Cheatdatabase downloaden...", "Pobieranie bazy kodów...", "Hile veritabanı indiriliyor...", "Загрузка базы читов...", "チートデータベースをダウンロード中...", "正在下载金手指数据库...", "正在下載金手指資料庫...", "치트 데이터베이스 다운로드 중..." } },
++	{ "Couldn't download the cheat database", { "No se pudo descargar la base de datos de trucos", "Impossible de télécharger la base de codes", "Cheat-Datenbank konnte nicht heruntergeladen werden", "Impossibile scaricare il database dei trucchi", "Não foi possível baixar o banco de dados de trapaças", "Kon de cheatdatabase niet downloaden", "Nie udało się pobrać bazy kodów", "Hile veritabanı indirilemedi", "Не удалось загрузить базу читов", "チートデータベースをダウンロードできませんでした", "无法下载金手指数据库", "無法下載金手指資料庫", "치트 데이터베이스를 다운로드할 수 없습니다" } },
++	{ "No more cheats for this game in the database", { "No hay más trucos para este juego en la base de datos", "Aucun autre code pour ce jeu dans la base", "Keine weiteren Cheats für dieses Spiel in der Datenbank", "Nessun altro trucco per questo gioco nel database", "Não há mais trapaças para este jogo no banco de dados", "Geen andere cheats voor dit spel in de database", "Brak kolejnych kodów do tej gry w bazie", "Veritabanında bu oyun için başka hile yok", "Других читов для этой игры в базе нет", "データベースにこのゲームのチートは他にありません", "数据库中没有此游戏的更多金手指", "資料庫中沒有此遊戲的更多金手指", "데이터베이스에 이 게임의 다른 치트가 없습니다" } },
++	{ "The cheat database couldn't be read", { "No se pudo leer la base de datos de trucos", "La base de codes n'a pas pu être lue", "Die Cheat-Datenbank konnte nicht gelesen werden", "Impossibile leggere il database dei trucchi", "Não foi possível ler o banco de dados de trapaças", "De cheatdatabase kon niet worden gelezen", "Nie udało się odczytać bazy kodów", "Hile veritabanı okunamadı", "Не удалось прочитать базу читов", "チートデータベースを読み込めませんでした", "无法读取金手指数据库", "無法讀取金手指資料庫", "치트 데이터베이스를 읽을 수 없습니다" } },
++	{ "Slot %d", { "Ranura %d", "Emplacement %d", "Platz %d", "Slot %d", "Slot %d", "Slot %d", "Slot %d", "Yuva %d", "Слот %d", "スロット %d", "栏位 %d", "欄位 %d", "슬롯 %d" } },
++	{ "Slot %d: empty", { "Ranura %d: vacía", "Emplacement %d : vide", "Platz %d: leer", "Slot %d: vuoto", "Slot %d: vazio", "Slot %d: leeg", "Slot %d: pusty", "Yuva %d: boş", "Слот %d: пусто", "スロット %d: 空き", "栏位 %d：空", "欄位 %d：空", "슬롯 %d: 비어 있음" } },
++	{ "On", { "Sí", "Activé", "An", "Attivo", "Ligado", "Aan", "Wł.", "Açık", "Вкл.", "オン", "开", "開", "켜짐" } },
++	{ "Off", { "No", "Désactivé", "Aus", "Disattivo", "Desligado", "Uit", "Wył.", "Kapalı", "Выкл.", "オフ", "关", "關", "꺼짐" } },
++	{ "On (30 to 60)", { "Sí (30 a 60)", "Activé (30 à 60)", "An (30 auf 60)", "Attivo (da 30 a 60)", "Ligado (30 para 60)", "Aan (30 naar 60)", "Wł. (30 do 60)", "Açık (30'dan 60'a)", "Вкл. (30 → 60)", "オン (30→60)", "开 (30→60)", "開 (30→60)", "켜짐 (30→60)" } },
++	{ "%d on", { "%d activos", "%d activés", "%d an", "%d attivi", "%d ligados", "%d aan", "Wł.: %d", "%d açık", "Вкл.: %d", "%d 個オン", "已开 %d 个", "已開 %d 個", "%d개 켜짐" } },
++	{ "FPS + Speed", { "FPS + velocidad", "FPS + vitesse", "FPS + Tempo", "FPS + velocità", "FPS + velocidade", "FPS + snelheid", "FPS + prędkość", "FPS + hız", "FPS + скорость", "FPS + 速度", "FPS + 速度", "FPS + 速度", "FPS + 속도" } },
++	{ "Speed", { "Velocidad", "Vitesse", "Tempo", "Velocità", "Velocidade", "Snelheid", "Prędkość", "Hız", "Скорость", "速度", "速度", "速度", "속도" } },
++	{ "On / Off", { "Activar / desactivar", "Activer / désactiver", "An / Aus", "Attiva / disattiva", "Ligar / desligar", "Aan / uit", "Wł. / wył.", "Aç / kapat", "Вкл. / выкл.", "オン / オフ", "开 / 关", "開 / 關", "켜기 / 끄기" } },
++	{ "Select", { "Elegir", "Choisir", "Auswählen", "Seleziona", "Selecionar", "Kiezen", "Wybierz", "Seç", "Выбрать", "決定", "选择", "選擇", "선택" } },
++	{ "Change", { "Cambiar", "Modifier", "Ändern", "Cambia", "Alterar", "Wijzigen", "Zmień", "Değiştir", "Изменить", "変更", "更改", "變更", "변경" } },
++	{ "Back", { "Volver", "Retour", "Zurück", "Indietro", "Voltar", "Terug", "Wstecz", "Geri", "Назад", "戻る", "返回", "返回", "뒤로" } },
++	{ "QUICK MENU", { "MENÚ RÁPIDO", "MENU RAPIDE", "SCHNELLMENÜ", "MENU RAPIDO", "MENU RÁPIDO", "SNELMENU", "SZYBKIE MENU", "HIZLI MENÜ", "БЫСТРОЕ МЕНЮ", "クイックメニュー", "快捷菜单", "快速選單", "빠른 메뉴" } },
++	{ "Empty", { "Vacía", "Vide", "Leer", "Vuoto", "Vazio", "Leeg", "Pusty", "Boş", "Пусто", "空き", "空", "空", "비어 있음" } },
++	{ "Get this game's cheats from the database", { "Obtener los trucos de este juego de la base de datos", "Récupérer les codes de ce jeu dans la base", "Cheats für dieses Spiel aus der Datenbank holen", "Prendi i trucchi di questo gioco dal database", "Obter as trapaças deste jogo do banco de dados", "Cheats voor dit spel uit de database halen", "Pobierz kody do tej gry z bazy", "Bu oyunun hilelerini veritabanından al", "Взять читы для этой игры из базы", "データベースからこのゲームのチートを取得", "从数据库获取此游戏的金手指", "從資料庫取得此遊戲的金手指", "데이터베이스에서 이 게임의 치트 가져오기" } },
++	{ "Download the cheat database", { "Descargar la base de datos de trucos", "Télécharger la base de codes", "Cheat-Datenbank herunterladen", "Scarica il database dei trucchi", "Baixar o banco de dados de trapaças", "Cheatdatabase downloaden", "Pobierz bazę kodów", "Hile veritabanını indir", "Загрузить базу читов", "チートデータベースをダウンロード", "下载金手指数据库", "下載金手指資料庫", "치트 데이터베이스 다운로드" } },
++	{ "No cheats for this game yet", { "Aún no hay trucos para este juego", "Pas encore de codes pour ce jeu", "Noch keine Cheats für dieses Spiel", "Ancora nessun trucco per questo gioco", "Ainda não há trapaças para este jogo", "Nog geen cheats voor dit spel", "Brak kodów do tej gry", "Bu oyun için henüz hile yok", "Читов для этой игры пока нет", "このゲームのチートはまだありません", "此游戏暂无金手指", "此遊戲暫無金手指", "이 게임의 치트가 아직 없습니다" } },
++	{ "Frame generation (30 to 60 FPS, experimental)", { "Generación de fotogramas (30 a 60 FPS, experimental)", "Génération d'images (30 à 60 FPS, expérimental)", "Bildgenerierung (30 auf 60 FPS, experimentell)", "Generazione fotogrammi (da 30 a 60 FPS, sperimentale)", "Geração de quadros (30 para 60 FPS, experimental)", "Framegeneratie (30 naar 60 FPS, experimenteel)", "Generowanie klatek (30 do 60 FPS, eksperymentalne)", "Kare üretimi (30'dan 60 FPS'ye, deneysel)", "Генерация кадров (30 → 60 FPS, экспериментально)", "フレーム生成 (30→60 FPS、実験的)", "帧生成（30→60 FPS，实验性）", "影格生成（30→60 FPS，實驗性）", "프레임 생성 (30→60 FPS, 실험적)" } },
++};
++
++int CurrentLang() {
++	const std::string &l = g_Config.sLanguageIni;  // es_ES, pt_BR, zh_CN, zh_TW, ...
++	static const struct { const char *prefix; int lang; } kMap[] = {
++		{ "es", ES }, { "fr", FR }, { "de", DE }, { "it", IT }, { "pt", PT }, { "nl", NL }, { "pl", PL },
++		{ "tr", TR }, { "ru", RU }, { "ja", JA }, { "zh_TW", TW }, { "zh_HK", TW }, { "zh", ZH }, { "ko", KO },
++	};
++	for (const auto &m : kMap)
++		if (startsWith(l, m.prefix))
++			return m.lang;
++	return -1;
++}
++
++}  // namespace
++
++const char *M33T(const char *english) {
++	const int lang = CurrentLang();
++	if (lang < 0)
++		return english;
++	for (const Row &row : kRows)
++		if (strcmp(row.en, english) == 0)
++			return row.t[lang];
++	return english;
++}
+diff --git a/ps4/PS4Lang.h b/ps4/PS4Lang.h
+new file mode 100644
+index 0000000..b80c12d
+--- /dev/null
++++ b/ps4/PS4Lang.h
+@@ -0,0 +1,6 @@
++#pragma once
++
++// M33's own words (the quick menu, the cheats page, its settings) in the language PPSSPP is set to:
++// English, Spanish, French, German, Italian, Portuguese, Dutch, Polish, Turkish, Russian, Japanese,
++// Chinese (simplified and traditional) and Korean. Anything not in the table comes back in English.
++const char *M33T(const char *english);
 diff --git a/ps4/PS4Main.cpp b/ps4/PS4Main.cpp
 new file mode 100644
 index 0000000..e1a4465
@@ -4073,10 +4235,10 @@ index 0000000..2f80279
 +}  // namespace PS4Pad
 diff --git a/ps4/PS4QuickMenu.cpp b/ps4/PS4QuickMenu.cpp
 new file mode 100644
-index 0000000..c9df115
+index 0000000..9a67f77
 --- /dev/null
 +++ b/ps4/PS4QuickMenu.cpp
-@@ -0,0 +1,820 @@
+@@ -0,0 +1,821 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4134,6 +4296,7 @@ index 0000000..c9df115
 +#include "UI/GameSettingsScreen.h"
 +#include "UI/PauseScreen.h"
 +#include "ps4/PS4Cheats.h"
++#include "ps4/PS4Lang.h"
 +#include "ps4/PS4QuickMenu.h"
 +
 +namespace {
@@ -4333,9 +4496,9 @@ index 0000000..c9df115
 +		auto sy = GetI18NCategory(I18NCat::SYSTEM);
 +		if (!M33Cheats::DatabaseExists()) {
 +			if (!M33Cheats::Downloading()) {
-+				status_ = "Downloading the cheat database...";
++				status_ = M33T("Downloading the cheat database...");
 +				M33Cheats::DownloadDatabase([this](bool ok) {
-+					status_ = ok ? "" : "Couldn't download the cheat database";
++					status_ = ok ? "" : M33T("Couldn't download the cheat database");
 +					if (ok)
 +						ImportCheats();
 +				});
@@ -4343,7 +4506,7 @@ index 0000000..c9df115
 +			return;
 +		}
 +		const int n = M33Cheats::ImportFromDatabase();
-+		status_ = n > 0 ? "" : (n == 0 ? "No more cheats for this game in the database" : "The cheat database couldn't be read");
++		status_ = n > 0 ? "" : (n == 0 ? M33T("No more cheats for this game in the database") : M33T("The cheat database couldn't be read"));
 +		UI::PlayUISound(UI::UISound::CONFIRM);
 +	}
 +
@@ -4460,19 +4623,19 @@ index 0000000..c9df115
 +	std::string ValueOf(int row) const {
 +		switch (row) {
 +		case ROW_SAVE:
-+			return StringFromFormat("Slot %d", slot_ + 1);
++			return StringFromFormat(M33T("Slot %d"), slot_ + 1);
 +		case ROW_LOAD: {
 +			if (!SaveState::HasSaveInSlot(statePrefix_, slot_))
-+				return StringFromFormat("Slot %d: empty", slot_ + 1);
-+			return StringFromFormat("Slot %d", slot_ + 1);
++				return StringFromFormat(M33T("Slot %d: empty"), slot_ + 1);
++			return StringFromFormat(M33T("Slot %d"), slot_ + 1);
 +		}
 +		case ROW_REWIND:
-+			return g_Config.bM33Rewind ? "On" : "Off";
++			return g_Config.bM33Rewind ? M33T("On") : M33T("Off");
 +		case ROW_FRAMEGEN:
-+			return g_Config.bM33FrameGen ? "On (30 to 60)" : "Off";
++			return g_Config.bM33FrameGen ? M33T("On (30 to 60)") : M33T("Off");
 +		case ROW_CHEATS: {
 +			const int n = M33Cheats::EnabledCount();
-+			return n ? StringFromFormat("%d on", n) : "";
++			return n ? StringFromFormat(M33T("%d on"), n) : "";
 +		}
 +		case ROW_RESOLUTION:
 +			return StringFromFormat("%dx  (%dx%d)", g_Config.iInternalResolution, 480 * g_Config.iInternalResolution, 272 * g_Config.iInternalResolution);
@@ -4481,7 +4644,7 @@ index 0000000..c9df115
 +		case ROW_COUNTER: {
 +			const bool fps = g_Config.iShowStatusFlags & (int)ShowStatusFlags::FPS_COUNTER;
 +			const bool speed = g_Config.iShowStatusFlags & (int)ShowStatusFlags::SPEED_COUNTER;
-+			return fps && speed ? "FPS + Speed" : fps ? "FPS" : speed ? "Speed" : "Off";
++			return fps && speed ? M33T("FPS + Speed") : fps ? "FPS" : speed ? M33T("Speed") : M33T("Off");
 +		}
 +		default:
 +			return "";
@@ -4742,15 +4905,15 @@ index 0000000..c9df115
 +		};
 +		ButtonGlyph(db, GLYPH_CROSS, bx + 17 * k, by, 17 * k, a);
 +		bx += 44 * k;
-+		label(cheatsPage_ ? "On / Off" : "Select");
++		label(cheatsPage_ ? M33T("On / Off") : M33T("Select"));
 +		if (!cheatsPage_) {
 +			ButtonGlyph(db, GLYPH_DPAD, bx + 17 * k, by, 17 * k, a);
 +			bx += 44 * k;
-+			label("Change");
++			label(M33T("Change"));
 +		}
 +		ButtonGlyph(db, GLYPH_CIRCLE, bx + 17 * k, by, 17 * k, a);
 +		bx += 44 * k;
-+		label("Back");
++		label(M33T("Back"));
 +	}
 +	dc.SetFontScale(1.0f, 1.0f);
 +	dc.Flush();
@@ -4760,7 +4923,7 @@ index 0000000..c9df115
 +	const float lx = x0 + 70 * k;
 +	Text(dc, "M33", lx, 78 * k, 44 * k, Col(TEXT, a));
 +	// the tag: the game is paused behind
-+	const char *tagText = "QUICK MENU";
++	const char *tagText = M33T("QUICK MENU");
 +	const float tagW = TextW(dc, tagText, 20 * k) + 28 * k;
 +	const float pulse = 0.75f + 0.25f * std::sin((float)now * 3.0f);
 +	const float tagX = lx + TextW(dc, "M33", 44 * k) + 20 * k;
@@ -4786,7 +4949,7 @@ index 0000000..c9df115
 +		const bool sel = row == sel_;
 +		const float alpha = a * (sel ? 1.0f : 0.8f);
 +		Icon(db, row, lx + 12 * k, y + 22 * k, 30 * k, Col(TEXT, alpha));
-+		Text(dc, kRowLabels[row], lx + 50 * k, y + 22 * k, 30 * k, Col(TEXT, alpha), ALIGN_LEFT | ALIGN_VCENTER);
++		Text(dc, M33T(kRowLabels[row]), lx + 50 * k, y + 22 * k, 30 * k, Col(TEXT, alpha), ALIGN_LEFT | ALIGN_VCENTER);
 +		const std::string value = ValueOf(row);
 +		if (value.empty())
 +			continue;
@@ -4825,7 +4988,7 @@ index 0000000..c9df115
 +		dc.Flush();
 +		dc.RebindTexture();
 +	} else {
-+		Text(dc, "Empty", (ax + bx) * 0.5f, (ay + by) * 0.5f, 30 * k, Col(TEXT, 0.8f * c), ALIGN_CENTER);
++		Text(dc, M33T("Empty"), (ax + bx) * 0.5f, (ay + by) * 0.5f, 30 * k, Col(TEXT, 0.8f * c), ALIGN_CENTER);
 +	}
 +	RectLine(db, ax, ay, bx, by, 1.5f * k, Col(0xFFFFFF, 0.31f * c));
 +	// the slots as dots, the current one bigger
@@ -4835,13 +4998,13 @@ index 0000000..c9df115
 +		const bool cur = i == slot_;
 +		db->FillCircle(dx, dy, (cur ? 6.5f : 4.0f) * k, 12, Col(0xFFFFFF, (cur ? 1.0f : 0.43f) * c));
 +	}
-+	const std::string date = SaveState::HasSaveInSlot(statePrefix_, slot_) ? SaveState::GetSlotDateAsString(statePrefix_, slot_) : std::string("Empty");
++	const std::string date = SaveState::HasSaveInSlot(statePrefix_, slot_) ? SaveState::GetSlotDateAsString(statePrefix_, slot_) : std::string(M33T("Empty"));
 +	Text(dc, StringFromFormat("Slot %d   ", slot_ + 1) + date, ax, by + 60 * k, 26 * k, Col(TEXT, c));
 +}
 +
 +void M33QuickMenu::DrawCheats(UIContext &dc, DrawBuffer *db, float x0, float right, float W, float H, float k, float a) {
 +	const float lx = x0 + 70 * k;
-+	Text(dc, "Cheats", lx, 78 * k, 44 * k, Col(TEXT, a));
++	Text(dc, M33T("Cheats"), lx, 78 * k, 44 * k, Col(TEXT, a));
 +	std::string name = title_;
 +	while (!name.empty() && TextW(dc, name, 26 * k) > right - lx - 70 * k)
 +		name.pop_back();
@@ -4866,8 +5029,8 @@ index 0000000..c9df115
 +		}
 +		const float cy = y + 19 * k;
 +		if (r == 0) {
-+			std::string label = M33Cheats::Downloading() ? "Downloading the cheat database..." :
-+				(M33Cheats::DatabaseExists() ? "Get this game's cheats from the database" : "Download the cheat database");
++			std::string label = M33Cheats::Downloading() ? M33T("Downloading the cheat database...") :
++				(M33Cheats::DatabaseExists() ? M33T("Get this game's cheats from the database") : M33T("Download the cheat database"));
 +			Text(dc, label, lx, cy, 26 * k, Col(sel ? TEXT : ACCENT, a), ALIGN_LEFT | ALIGN_VCENTER);
 +			continue;
 +		}
@@ -4881,10 +5044,10 @@ index 0000000..c9df115
 +		while (!text.empty() && TextW(dc, text, 26 * k) > hx1 - lx - valueW - 30 * k)
 +			text.pop_back();
 +		Text(dc, text, lx + 10 * k, cy, 26 * k, Col(TEXT, a * (sel ? 1.0f : 0.8f)), ALIGN_LEFT | ALIGN_VCENTER);
-+		Text(dc, item.enabled ? "On" : "Off", hx1 - 24 * k, cy, 24 * k, Col(item.enabled ? ACCENT : TEXT, a * (item.enabled ? 1.0f : 0.6f)), ALIGN_RIGHT | ALIGN_VCENTER);
++		Text(dc, item.enabled ? M33T("On") : M33T("Off"), hx1 - 24 * k, cy, 24 * k, Col(item.enabled ? ACCENT : TEXT, a * (item.enabled ? 1.0f : 0.6f)), ALIGN_RIGHT | ALIGN_VCENTER);
 +	}
 +	if (items.empty())
-+		Text(dc, "No cheats for this game yet", lx, TOP + ROW_H * 1.5f, 24 * k, Col(TEXT, 0.6f * a));
++		Text(dc, M33T("No cheats for this game yet"), lx, TOP + ROW_H * 1.5f, 24 * k, Col(TEXT, 0.6f * a));
 +	if (!status_.empty())
 +		Text(dc, status_, lx, H - 130 * k, 24 * k, Col(WARN, a));
 +}
@@ -6061,6 +6224,351 @@ index 0000000..1c86573
 +void ff_aom_uninit_film_grain_params(void *s) {
 +	(void)s;
 +}
+diff --git a/ps4/PS4TextDrawer.cpp b/ps4/PS4TextDrawer.cpp
+new file mode 100644
+index 0000000..9950060
+--- /dev/null
++++ b/ps4/PS4TextDrawer.cpp
+@@ -0,0 +1,339 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++// M33: text on the PS4, through FreeType (PPSSPP's own copy, ext/freetype). Without a text drawer
++// PPSSPP falls back to its small bitmap font, which only has Latin letters: Russian, Japanese,
++// Chinese and Korean menus, and game titles in them, came out as "? ? ?".
++//
++// The UI font is PPSSPP's own (Roboto Condensed, from the assets: Latin, Turkish, Polish, Cyrillic,
++// Greek). A character it doesn't have comes from the first fallback that has it: the PS4's own
++// system fonts (/preinst/common/font: SST, SSTJpPro, DFHEI5 for Chinese, SCEPS4Yoongd for Korean),
++// then the Noto Sans CJK fonts in the package (assets/fonts), in case the system ones can't be read.
++// The current language's CJK font goes first, so Han characters take that language's shapes.
++// Bold fallback characters are FreeType's emboldening. Left to right only (none of M33's languages needs shaping).
++
++#include <algorithm>
++#include <cstring>
++#include <map>
++#include <memory>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++#include <ft2build.h>
++#include FT_FREETYPE_H
++#include FT_SYNTHESIS_H
++
++#include "Common/Data/Encoding/Utf8.h"
++#include "Common/File/VFS/VFS.h"
++#include "Common/GPU/thin3d.h"
++#include "Common/Log.h"
++#include "Common/Render/Text/draw_text.h"
++#include "Common/StringUtils.h"
++#include "Core/Config.h"
++
++namespace {
++
++struct Face {
++	FT_Face face = nullptr;
++	std::vector<uint8_t> data;  // (FreeType reads the font from this memory)
++	std::string name;
++};
++
++class TextDrawerPS4 : public TextDrawer {
++public:
++	explicit TextDrawerPS4(Draw::DrawContext *draw) : TextDrawer(draw) {
++		if (FT_Init_FreeType(&lib_) != 0) {
++			ERROR_LOG(Log::G3D, "M33 text: FreeType didn't start");
++			lib_ = nullptr;
++		}
++		dpiScale_ = CalculateDPIScale();
++	}
++	~TextDrawerPS4() override {
++		ClearCache();
++		ClearFonts();
++		if (lib_)
++			FT_Done_FreeType(lib_);
++	}
++
++	bool IsReady() const override { return lib_ != nullptr; }
++
++	void SetOrCreateFont(const FontStyle &style) override {
++		fontStyle_ = style;
++		const std::string file = GetFilenameForFontStyle(style) + ".ttf";
++		auto it = primary_.find(file);
++		if (it == primary_.end()) {
++			auto face = std::make_unique<Face>();
++			size_t size = 0;
++			uint8_t *bytes = g_VFS.ReadFile(file.c_str(), &size);
++			if (bytes) {
++				face->data.assign(bytes, bytes + size);
++				delete[] bytes;
++				if (FT_New_Memory_Face(lib_, face->data.data(), (FT_Long)face->data.size(), 0, &face->face) != 0)
++					face->face = nullptr;
++			}
++			if (!face->face)
++				ERROR_LOG(Log::G3D, "M33 text: couldn't load %s", file.c_str());
++			face->name = file;
++			it = primary_.emplace(file, std::move(face)).first;
++		}
++		cur_ = it->second->face;
++		px_ = std::max(4, (int)(style.sizePts / dpiScale_ * 1.25f));
++		bold_ = ((int)style.flags & (int)FontStyleFlags::Bold) != 0;
++	}
++
++	bool DrawStringBitmap(std::vector<uint8_t> &bitmapData, TextStringEntry &entry, Draw::DataFormat texFormat, std::string_view str, int align, bool fullColor) override;
++
++protected:
++	void MeasureStringInternal(std::string_view str, float *w, float *h) override {
++		Layout layout;
++		DoLayout(str, &layout, false);
++		*w = (float)std::max(1, layout.width);
++		*h = (float)std::max(1, layout.height);
++	}
++	bool SupportsColorEmoji() const override { return false; }
++	void ClearFonts() override {
++		for (auto &p : primary_)
++			if (p.second->face)
++				FT_Done_Face(p.second->face);
++		primary_.clear();
++		for (auto &f : fallbacks_)
++			if (f->face)
++				FT_Done_Face(f->face);
++		fallbacks_.clear();
++		fallbacksLoaded_ = false;
++		glyphFace_.clear();
++		cur_ = nullptr;
++	}
++
++private:
++	struct Glyph {
++		FT_Face face;
++		FT_UInt index;
++		int x;  // pen position on its line
++	};
++	struct Line {
++		std::vector<Glyph> glyphs;
++		int width = 0;
++	};
++	struct Layout {
++		std::vector<Line> lines;
++		int width = 0, height = 0, lineHeight = 0, ascent = 0;
++	};
++
++	void LoadFallbacks();
++	FT_Face FaceFor(uint32_t c, FT_UInt *index);
++	void SetSize(FT_Face face) {
++		FT_Set_Pixel_Sizes(face, 0, px_);
++	}
++	bool LoadGlyph(FT_Face face, FT_UInt index, bool render) {
++		SetSize(face);
++		if (FT_Load_Glyph(face, index, FT_LOAD_DEFAULT | FT_LOAD_TARGET_NORMAL) != 0)
++			return false;
++		if (bold_ && face != cur_)  // (the UI font has its own bold file)
++			FT_GlyphSlot_Embolden(face->glyph);
++		if (render && face->glyph->format != FT_GLYPH_FORMAT_BITMAP)
++			return FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL) == 0;
++		return true;
++	}
++	void DoLayout(std::string_view str, Layout *layout, bool keepGlyphs);
++
++	FT_Library lib_ = nullptr;
++	std::map<std::string, std::unique_ptr<Face>> primary_;
++	std::vector<std::unique_ptr<Face>> fallbacks_;
++	bool fallbacksLoaded_ = false;
++	std::unordered_map<uint32_t, int> glyphFace_;  // character -> fallback (-1: the UI font, -2: none)
++	FT_Face cur_ = nullptr;
++	int px_ = 16;
++	bool bold_ = false;
++};
++
++void TextDrawerPS4::LoadFallbacks() {
++	fallbacksLoaded_ = true;
++	const std::string lang = g_Config.sLanguageIni;
++	const char *sys = "/preinst/common/font/";
++	// Japanese, Chinese, Korean: the current language's first (its Han shapes)
++	std::vector<std::pair<std::string, std::string>> cjk = {
++		{ "ja", "SSTJpPro-Regular.otf" }, { "zh", "DFHEI5-SONY.ttf" }, { "ko", "SCEPS4Yoongd-Medium.otf" },
++	};
++	std::vector<std::pair<std::string, std::string>> bundled = {
++		{ "ja", "fonts/NotoSansJP-Regular.otf" }, { "zh", "fonts/NotoSansSC-Regular.otf" }, { "ko", "fonts/NotoSansKR-Regular.otf" },
++	};
++	auto first = [&](std::vector<std::pair<std::string, std::string>> &v) {
++		std::stable_partition(v.begin(), v.end(), [&](const auto &e) { return startsWith(lang, e.first); });
++	};
++	first(cjk);
++	first(bundled);
++
++	auto addFile = [&](const std::string &path) {
++		auto face = std::make_unique<Face>();
++		face->name = path;
++		if (FT_New_Face(lib_, path.c_str(), 0, &face->face) == 0) {
++			fallbacks_.push_back(std::move(face));
++			return true;
++		}
++		return false;
++	};
++	auto addAsset = [&](const std::string &path) {
++		auto face = std::make_unique<Face>();
++		face->name = path;
++		size_t size = 0;
++		uint8_t *bytes = g_VFS.ReadFile(path.c_str(), &size);
++		if (!bytes)
++			return false;
++		face->data.assign(bytes, bytes + size);
++		delete[] bytes;
++		if (FT_New_Memory_Face(lib_, face->data.data(), (FT_Long)face->data.size(), 0, &face->face) != 0)
++			return false;
++		fallbacks_.push_back(std::move(face));
++		return true;
++	};
++	int system = 0, packaged = 0;
++	// The packaged font only where the console's own can't be opened (17 MB we'd rather not hold),
++	// and read from the package as needed rather than all at once
++	for (size_t i = 0; i < cjk.size(); i++) {
++		if (addFile(sys + cjk[i].second))
++			system++;
++		else if (addFile("/app0/assets/" + bundled[i].second) || addAsset(bundled[i].second))
++			packaged++;
++	}
++	system += addFile(std::string(sys) + "SST-Roman.otf");
++	NOTICE_LOG(Log::G3D, "M33 text: %d system fonts, %d packaged ones as fallbacks (language %s)", system, packaged, lang.c_str());
++}
++
++FT_Face TextDrawerPS4::FaceFor(uint32_t c, FT_UInt *index) {
++	if (cur_) {
++		*index = FT_Get_Char_Index(cur_, c);
++		if (*index)
++			return cur_;
++	}
++	auto it = glyphFace_.find(c);
++	if (it == glyphFace_.end()) {
++		if (!fallbacksLoaded_)
++			LoadFallbacks();
++		int found = -2;
++		for (size_t i = 0; i < fallbacks_.size(); i++) {
++			if (FT_Get_Char_Index(fallbacks_[i]->face, c)) {
++				found = (int)i;
++				break;
++			}
++		}
++		it = glyphFace_.emplace(c, found).first;
++	}
++	if (it->second >= 0) {
++		FT_Face face = fallbacks_[it->second]->face;
++		*index = FT_Get_Char_Index(face, c);
++		return face;
++	}
++	*index = 0;  // the UI font's "missing" box
++	return cur_;
++}
++
++void TextDrawerPS4::DoLayout(std::string_view str, Layout *layout, bool keepGlyphs) {
++	if (!cur_)
++		return;
++	SetSize(cur_);
++	const FT_Size_Metrics &m = cur_->size->metrics;
++	layout->ascent = (int)((m.ascender + 63) >> 6);
++	layout->lineHeight = std::max(1, (int)((m.ascender - m.descender + 63) >> 6));
++	std::vector<std::string_view> lines;
++	SplitString(str, '\n', lines);
++	if (lines.empty())
++		lines.push_back(std::string_view());
++	for (std::string_view text : lines) {
++		Line line;
++		int pen = 0;
++		UTF8 decoder(text);
++		while (!decoder.end()) {
++			const uint32_t c = decoder.next();
++			if (c == '\r')
++				continue;
++			FT_UInt index = 0;
++			FT_Face face = FaceFor(c, &index);
++			if (!face || !LoadGlyph(face, index, false))
++				continue;
++			if (keepGlyphs)
++				line.glyphs.push_back({ face, index, pen });
++			pen += (int)((face->glyph->advance.x + 32) >> 6);
++		}
++		line.width = pen;
++		layout->width = std::max(layout->width, pen);
++		layout->lines.push_back(std::move(line));
++	}
++	layout->height = layout->lineHeight * (int)layout->lines.size();
++}
++
++bool TextDrawerPS4::DrawStringBitmap(std::vector<uint8_t> &bitmapData, TextStringEntry &entry, Draw::DataFormat texFormat, std::string_view str, int align, bool fullColor) {
++	if (str.empty() || !cur_) {
++		bitmapData.clear();
++		return false;
++	}
++	Layout layout;
++	DoLayout(str, &layout, true);
++	const int w = (std::max(1, layout.width) + 3) & ~3, h = std::max(1, layout.height);
++	std::vector<uint8_t> alpha((size_t)w * h, 0);
++	for (size_t li = 0; li < layout.lines.size(); li++) {
++		const Line &line = layout.lines[li];
++		int x0 = 0;
++		if (align & ALIGN_HCENTER)
++			x0 = (w - line.width) / 2;
++		else if (align & ALIGN_RIGHT)
++			x0 = w - line.width;
++		const int baseline = (int)li * layout.lineHeight + layout.ascent;
++		for (const Glyph &g : line.glyphs) {
++			if (!LoadGlyph(g.face, g.index, true))
++				continue;
++			const FT_GlyphSlot slot = g.face->glyph;
++			const FT_Bitmap &bm = slot->bitmap;
++			if (bm.pixel_mode != FT_PIXEL_MODE_GRAY)
++				continue;
++			const int gx = x0 + g.x + slot->bitmap_left, gy = baseline - slot->bitmap_top;
++			for (unsigned y = 0; y < bm.rows; y++) {
++				const int ty = gy + (int)y;
++				if (ty < 0 || ty >= h)
++					continue;
++				const uint8_t *src = bm.buffer + (ptrdiff_t)y * bm.pitch;
++				for (unsigned x = 0; x < bm.width; x++) {
++					const int tx = gx + (int)x;
++					if (tx < 0 || tx >= w)
++						continue;
++					uint8_t &d = alpha[(size_t)ty * w + tx];
++					d = std::max(d, src[x]);
++				}
++			}
++		}
++	}
++	entry.texture = nullptr;
++	entry.bmWidth = entry.width = w;
++	entry.bmHeight = entry.height = h;
++	entry.lastUsedFrame = frameCount_;
++	if (texFormat == Draw::DataFormat::B4G4R4A4_UNORM_PACK16 || texFormat == Draw::DataFormat::R4G4B4A4_UNORM_PACK16) {
++		bitmapData.resize((size_t)w * h * sizeof(uint16_t));
++		uint16_t *out = (uint16_t *)bitmapData.data();
++		for (size_t i = 0; i < alpha.size(); i++)
++			out[i] = AlphaToPremul4444(alpha[i]);
++	} else if (texFormat == Draw::DataFormat::R8_UNORM) {
++		bitmapData = std::move(alpha);
++	} else {
++		_assert_msg_(false, "Bad TextDrawer format");
++		return false;
++	}
++	return true;
++}
++
++}  // namespace
++
++TextDrawer *CreateTextDrawerPS4(Draw::DrawContext *draw) {
++	return new TextDrawerPS4(draw);
++}
 diff --git a/ps4/PS4VulkanWSI.cpp b/ps4/PS4VulkanWSI.cpp
 new file mode 100644
 index 0000000..606695d
@@ -6990,10 +7498,10 @@ index 0000000..1ba337d
 +bool M33Fw_TakeDirect(const std::string &disc);
 diff --git a/ps4/ps4.cmake b/ps4/ps4.cmake
 new file mode 100644
-index 0000000..c8bcd9c
+index 0000000..3577617
 --- /dev/null
 +++ b/ps4/ps4.cmake
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,49 @@
 +# M33: PPSSPP's PS4 frontend, included from the top CMakeLists.txt once ${TargetBin} exists.
 +# Built with M33's toolchain (toolchain/ps4-m33.cmake, and ps4-love-style.cmake as the project
 +# include: PS4_RUNTIME_SOURCES, ps4_link_mesa, ps4_add_eboot).
@@ -7009,6 +7517,8 @@ index 0000000..c8bcd9c
 +	ps4/PS4Cheats.cpp
 +	ps4/PS4Cheats.h
 +	ps4/PS4Pad.cpp
++	ps4/PS4TextDrawer.cpp
++	ps4/PS4Lang.cpp
 +	ps4/PS4QuickMenu.cpp
 +	ps4/PS4QuickMenu.h
 +	ps4/PS4Rewind.cpp
@@ -7031,6 +7541,10 @@ index 0000000..c8bcd9c
 +
 +# HTTPS (RetroAchievements, downloads): naett's curl backend on the sysroot's static curl + OpenSSL
 +target_link_libraries(${TargetBin} ${PS4_SYSROOT}/lib/libcurl.a ${PS4_SYSROOT}/lib/libssl.a ${PS4_SYSROOT}/lib/libcrypto.a ${PS4_SYSROOT}/lib/libz.a)
++
++# Text in every language (ps4/PS4TextDrawer.cpp): PPSSPP's own FreeType
++target_include_directories(${TargetBin} PRIVATE ${CMAKE_SOURCE_DIR}/ext/freetype/include)
++target_link_libraries(${TargetBin} freetype)
 +
 +# RADV on GNM, the system libraries, and eboot.bin
 +ps4_link_mesa(${TargetBin})
