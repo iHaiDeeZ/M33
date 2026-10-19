@@ -581,7 +581,7 @@ index 93654cf..fe1e1a9 100644
  	// Use gameID_EmulatedTimestamp for filename
  	std::string discID = g_paramSFO.GetDiscID();
 diff --git a/Core/Config.cpp b/Core/Config.cpp
-index a15dc9e..437bf76 100644
+index a15dc9e..cde4a4e 100644
 --- a/Core/Config.cpp
 +++ b/Core/Config.cpp
 @@ -267,11 +267,17 @@ static const ConfigSetting generalSettings[] = {
@@ -602,15 +602,16 @@ index a15dc9e..437bf76 100644
  	ConfigSetting("EnablePlugins", SETTING(g_Config, bEnablePlugins), true, CfgFlag::PER_GAME | CfgFlag::REPORT),
  	ConfigSetting("EnableFileHandlerPlugins", SETTING(g_Config, bEnableFileHandlerPlugins), false, CfgFlag::DEFAULT),
  	ConfigSetting("CwCheatRefreshRate", SETTING(g_Config, iCwCheatRefreshIntervalMs), 77, CfgFlag::PER_GAME),
-@@ -328,6 +334,7 @@ static const ConfigSetting generalSettings[] = {
+@@ -328,6 +334,8 @@ static const ConfigSetting generalSettings[] = {
  	ConfigSetting("CompressSymbols", SETTING(g_Config, bCompressSymbols), true, CfgFlag::DEFAULT),
  	ConfigSetting("CacheFullIsoInRam", SETTING(g_Config, bCacheFullIsoInRam), false, CfgFlag::PER_GAME),
  	ConfigSetting("AutoUpgradeFirmware", SETTING(g_Config, bAutoUpgradeFirmware), true, CfgFlag::DEFAULT),
 +	ConfigSetting("StartInXMB", SETTING(g_Config, bStartInXMB), false, CfgFlag::DEFAULT),
++	ConfigSetting("M33GameBoot", SETTING(g_Config, bM33GameBoot), true, CfgFlag::DEFAULT),
  	ConfigSetting("RemoteISOPort", SETTING(g_Config, iRemoteISOPort), 0, CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOServer", SETTING(g_Config, sLastRemoteISOServer), "", CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOPort", SETTING(g_Config, iLastRemoteISOPort), 0, CfgFlag::DEFAULT),
-@@ -455,6 +462,9 @@ static int DefaultInternalResolution() {
+@@ -455,6 +463,9 @@ static int DefaultInternalResolution() {
  	return scale;
  #elif PPSSPP_PLATFORM(IOS)
  	return 2;
@@ -620,7 +621,7 @@ index a15dc9e..437bf76 100644
  #else
  	return 0;
  #endif
-@@ -1150,7 +1160,12 @@ static const ConfigSetting upgradeSettings[] = {
+@@ -1150,7 +1161,12 @@ static const ConfigSetting upgradeSettings[] = {
  };
  
  static const ConfigSetting themeSettings[] = {
@@ -633,7 +634,7 @@ index a15dc9e..437bf76 100644
  };
  
  static const ConfigSetting vrSettings[] = {
-@@ -1403,6 +1418,13 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
+@@ -1403,6 +1419,13 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
  	bool postShadersInitialized = iniFile.HasSection("PostShaderList");
  	Section *postShaderChain = iniFile.GetOrCreateSection("PostShaderList");
  	Section *postShaderSetting = iniFile.GetOrCreateSection("PostShaderSetting");
@@ -648,18 +649,19 @@ index a15dc9e..437bf76 100644
  		postShaderChain->Set("PostShader1", "ColorCorrection");
  		postShaderSetting->Set("ColorCorrectionSettingCurrentValue1", 1.0f);
 diff --git a/Core/Config.h b/Core/Config.h
-index 3adb876..4e98e18 100644
+index 3adb876..f184033 100644
 --- a/Core/Config.h
 +++ b/Core/Config.h
-@@ -253,6 +253,7 @@ struct Config : public ConfigBlock {
+@@ -253,6 +253,8 @@ struct Config : public ConfigBlock {
  	bool bCompressSymbols;
  	bool bCacheFullIsoInRam;
  	bool bAutoUpgradeFirmware;
 +	bool bStartInXMB;  // M33 (PS4): boot the installed firmware's XMB at startup
++	bool bM33GameBoot;  // M33 (PS4): start disc games through the firmware, for its game boot (UI/EmuScreen.cpp)
  	int iRemoteISOPort; // Also used for serving a local remote debugger.
  	std::string sLastRemoteISOServer;
  	int iLastRemoteISOPort;
-@@ -372,6 +373,8 @@ struct Config : public ConfigBlock {
+@@ -372,6 +374,8 @@ struct Config : public ConfigBlock {
  	int iAutoLoadSaveState; // 0 = off, 1 = oldest (deprecated), 2 = newest, 3+ = slot number + 3 (up to 5)
  	int iSaveStateSlotCount;
  	bool bEnableCheats;
@@ -1447,7 +1449,7 @@ index 0bf44c7..7f42b61 100644
  		if (g_Config.iShowStatusFlags & (int)ShowStatusFlags::BATTERY_PERCENT) {
  			const int percentage = System_GetPropertyInt(SYSPROP_BATTERY_PERCENTAGE);
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
-index e1a8d56..d6802e8 100644
+index e1a8d56..4c7af55 100644
 --- a/UI/EmuScreen.cpp
 +++ b/UI/EmuScreen.cpp
 @@ -60,6 +60,14 @@ using namespace std::placeholders;
@@ -1499,7 +1501,7 @@ index e1a8d56..d6802e8 100644
  	if (Achievements::IsBlockingExecution()) {
  		// Keep waiting.
  		return;
-@@ -318,6 +337,31 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+@@ -318,6 +337,33 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
  	coreParam.enableSound = g_Config.bEnableSound;
  	coreParam.fileToStart = filename;
  	coreParam.mountIso.clear();
@@ -1516,14 +1518,16 @@ index e1a8d56..d6802e8 100644
 +		const Path vsh = g_Config.nandRootDirectory / "flash0/vsh/module/vshmain.prx";
 +		const std::string ext = filename.GetFileExtension();
 +		const bool disc = ext == ".iso" || ext == ".cso" || ext == ".chd";
-+		if (disc && !M33Fw_TakeDirect(filename.ToString()) && File::Exists(vsh)) {
++		// (Settings > System > PSP Firmware > "Play the PSP game boot" off: always straight in)
++		const bool direct = M33Fw_TakeDirect(filename.ToString());
++		if (disc && !direct && g_Config.bM33GameBoot && File::Exists(vsh)) {
 +			NOTICE_LOG(Log::Boot, "M33: %s through the firmware", filename.c_str());
 +			M33Fw_SetDisc(filename.ToString());
 +			coreParam.fileToStart = vsh;
 +			coreParam.mountIso = filename;
 +		} else {
 +			if (disc)
-+				NOTICE_LOG(Log::Boot, "M33: %s straight in (%s)", filename.c_str(), File::Exists(vsh) ? "launched by the firmware" : "no firmware installed");
++				NOTICE_LOG(Log::Boot, "M33: %s straight in (%s)", filename.c_str(), direct ? "launched by the firmware" : !g_Config.bM33GameBoot ? "game boot turned off" : "no firmware installed");
 +			M33Fw_SetDisc("");
 +		}
 +	}
@@ -1531,7 +1535,7 @@ index e1a8d56..d6802e8 100644
  	coreParam.mountRoot = g_Config.mountRoot;
  	coreParam.startBreak = !g_Config.bAutoRun;
  	coreParam.headLess = false;
-@@ -449,6 +493,9 @@ void EmuScreen::bootComplete() {
+@@ -449,6 +495,9 @@ void EmuScreen::bootComplete() {
  
  EmuScreen::~EmuScreen() {
  	g_controlMapper.RemoveListener(this);
@@ -1541,7 +1545,7 @@ index e1a8d56..d6802e8 100644
  
  	std::string gameID = g_paramSFO.GetValueString("DISC_ID");
  	g_Config.TimeTracker().Stop(gameID);
-@@ -548,7 +595,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
+@@ -548,7 +597,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
  	// External commands, like from the Windows UI.
  	// This happens on the main thread.
  	if (message == UIMessage::REQUEST_GAME_PAUSE && screenManager()->topScreen() == this) {
@@ -1550,7 +1554,7 @@ index e1a8d56..d6802e8 100644
  	} else if (message == UIMessage::REQUEST_GAME_STOP) {
  		// We will push MainScreen in update().
  		if (bootPending_) {
-@@ -677,7 +724,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
+@@ -677,7 +726,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
  				// use this as the fallback way to get into the menu.
  				// Don't do it on the first resume though, in case we launch directly into emuscreen, like from a frontend - see #18926
  				if (!equals(value, "first")) {
@@ -1559,7 +1563,7 @@ index e1a8d56..d6802e8 100644
  				}
  			}
  		}
-@@ -1417,6 +1464,19 @@ void EmuScreen::update() {
+@@ -1417,6 +1466,19 @@ void EmuScreen::update() {
  	resumeButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR && Memory::MemFault_MayBeResumable() ? V_VISIBLE : V_GONE);
  	resetButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR ? V_VISIBLE : V_GONE);
  	backButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR ? V_VISIBLE : V_GONE);
@@ -1579,7 +1583,7 @@ index e1a8d56..d6802e8 100644
  
  	if (chatButton_ && chatMenu_) {
  		if (chatMenu_->GetVisibility() != V_GONE) {
-@@ -1464,9 +1524,10 @@ void EmuScreen::update() {
+@@ -1464,9 +1526,10 @@ void EmuScreen::update() {
  
  	if (pauseTrigger_) {
  		pauseTrigger_ = false;
@@ -1591,7 +1595,7 @@ index e1a8d56..d6802e8 100644
  	if (!PSP_IsInited())
  		return;
  
-@@ -1715,6 +1776,10 @@ bool EmuScreen::AllowFocusMovement() const {
+@@ -1715,6 +1778,10 @@ bool EmuScreen::AllowFocusMovement() const {
  	if (chatMenu_ && chatMenu_->GetVisibility() == UI::V_VISIBLE) {
  		return true;
  	}
@@ -1602,7 +1606,7 @@ index e1a8d56..d6802e8 100644
  	// We have just a game controller and possibly a chat and debug button. Don't allow focus movement.
  	return false;
  }
-@@ -1735,6 +1800,14 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1735,6 +1802,14 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  	PSP_UpdateDebugStats((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::DEBUG_STATS || g_Config.bLogFrameDrops);
  	clearColor_ = 0;
  	bool blockedExecution = Achievements::IsBlockingExecution();
@@ -1617,7 +1621,7 @@ index e1a8d56..d6802e8 100644
  	if (!blockedExecution) {
  		// We process savestates before running the frame.
  		SaveState::Process();
-@@ -1805,6 +1878,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1805,6 +1880,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  			// Run post processing and other passes.
  			gpu->PrepareCopyDisplayToOutput(displayLayoutConfig);
  			gpu->EndHostFrame();
@@ -1628,7 +1632,7 @@ index e1a8d56..d6802e8 100644
  
  			// The right time to run this
  			if (ScreenshotNotifyPostGameRender(draw) && skipBufferEffects) {
-@@ -1841,6 +1918,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1841,6 +1920,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  }
  
  bool EmuScreen::hasVisibleUI() {
@@ -1639,7 +1643,7 @@ index e1a8d56..d6802e8 100644
  	// Regular but uncommon UI.
  	if (saveStatePreview_->GetVisibility() != UI::V_GONE || loadingSpinner_->GetVisibility() == UI::V_VISIBLE)
  		return true;
-@@ -1872,6 +1953,9 @@ void EmuScreen::renderUI() {
+@@ -1872,6 +1955,9 @@ void EmuScreen::renderUI() {
  	// This sets up some important states but not the viewport.
  	ctx->Begin();
  
@@ -1662,7 +1666,7 @@ index 08a7dda..828b314 100644
  	UI::Clickable *chatButton_ = nullptr;
  	ChatMenu *chatMenu_ = nullptr;
 diff --git a/UI/FirmwareScreen.cpp b/UI/FirmwareScreen.cpp
-index 444036b..986cd4c 100644
+index 444036b..68dd7e7 100644
 --- a/UI/FirmwareScreen.cpp
 +++ b/UI/FirmwareScreen.cpp
 @@ -16,6 +16,8 @@
@@ -1674,7 +1678,7 @@ index 444036b..986cd4c 100644
  #include "Common/Data/Text/Parsers.h"
  #include "Common/Log.h"
  #include "Common/StringUtils.h"
-@@ -27,6 +29,9 @@
+@@ -27,11 +29,17 @@
  #include "Common/UI/View.h"
  #include "Common/UI/ViewGroup.h"
  
@@ -1684,7 +1688,15 @@ index 444036b..986cd4c 100644
  #include "Core/Config.h"
  #include "Core/System.h"
  #include "Core/Util/PathUtil.h"
-@@ -118,12 +123,28 @@ void FirmwareScreen::CreateSettingsViews(UI::ViewGroup *parent) {
+ 
+ #include "UI/FirmwareScreen.h"
++#if PPSSPP_PLATFORM(PS4)
++#include "ps4/PS4Lang.h"
++#endif
+ #include "UI/InstallUpdateScreen.h"
+ #include "UI/MiscViews.h"
+ 
+@@ -118,12 +126,32 @@ void FirmwareScreen::CreateSettingsViews(UI::ViewGroup *parent) {
  		LaunchVSH();
  	});
  	launch->SetEnabled(!gameRunning && info_.hasVsh && FirmwareVersionSupportsVSH(info_.version));
@@ -1694,6 +1706,10 @@ index 444036b..986cd4c 100644
 +	CheckBox *startInXmb = parent->Add(new CheckBox(&g_Config.bStartInXMB, sy->T("Start in the XMB"),
 +		sy->T("StartInXMBDesc", "Hold L1 while M33 starts to skip it")));
 +	startInXmb->SetEnabled(info_.hasVsh && FirmwareVersionSupportsVSH(info_.version));
++	// and whether games started from M33's list go through it for its game boot animation
++	CheckBox *gameBoot = parent->Add(new CheckBox(&g_Config.bM33GameBoot, sy->T("M33GameBoot", M33T("Play the PSP game boot when a game starts")),
++		sy->T("M33GameBootDesc", M33T("Off: games start straight away, without the firmware"))));
++	gameBoot->SetEnabled(info_.hasVsh);
 +#endif
  
  	if (info_.hasVsh && !FirmwareVersionSupportsVSH(info_.version)) {
@@ -1713,7 +1729,7 @@ index 444036b..986cd4c 100644
  	if (System_GetPropertyBool(SYSPROP_HAS_FILE_BROWSER)) {
  		Choice *install = parent->Add(new Choice(iz->T("Install PSP firmware update"), ImageID("I_FOLDER_UPLOAD")));
  		install->OnClick.Add([this](UI::EventParams &) {
-@@ -167,6 +188,65 @@ void FirmwareScreen::LaunchVSH() {
+@@ -167,6 +195,65 @@ void FirmwareScreen::LaunchVSH() {
  	System_PostUIMessage(UIMessage::REQUEST_GAME_BOOT, (nandRoot_ / "flash0/vsh/module/vshmain.prx").ToString());
  }
  
@@ -1794,10 +1810,23 @@ index 9f3e495..da47ce4 100644
  	Path nandRoot_;
  	InstalledFirmwareInfo info_;
 diff --git a/UI/GameBrowser.cpp b/UI/GameBrowser.cpp
-index b205c73..80e8219 100644
+index b205c73..d77af7c 100644
 --- a/UI/GameBrowser.cpp
 +++ b/UI/GameBrowser.cpp
-@@ -1096,6 +1096,11 @@ void GameBrowser::Refresh() {
+@@ -848,8 +848,11 @@ Path GameBrowser::HomePath() {
+ 	}
+ #if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(SWITCH) || PPSSPP_PLATFORM(WINDOWS) || PPSSPP_PLATFORM(UWP) || PPSSPP_PLATFORM(IOS)
+ 	return g_Config.memStickDirectory;
++#elif PPSSPP_PLATFORM(PS4)
++	return Path("/data/March33/games");  // M33: the games folder (no HOME here: the Home button crashed)
+ #else
+-	return Path(getenv("HOME"));
++	const char *home = getenv("HOME");
++	return home ? Path(home) : g_Config.memStickDirectory;
+ #endif
+ }
+ 
+@@ -1096,6 +1099,11 @@ void GameBrowser::Refresh() {
  		std::vector<File::FileInfo> fileInfo;
  		path_.GetListing(fileInfo, "iso:cso:chd:pbp:elf:prx:ppdmp:");
  		for (size_t i = 0; i < fileInfo.size(); i++) {
@@ -3393,10 +3422,10 @@ index 0000000..4cd600c
 +}  // namespace PS4Keyboard
 diff --git a/ps4/PS4Lang.cpp b/ps4/PS4Lang.cpp
 new file mode 100644
-index 0000000..83bb348
+index 0000000..7a9f4ab
 --- /dev/null
 +++ b/ps4/PS4Lang.cpp
-@@ -0,0 +1,92 @@
+@@ -0,0 +1,94 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3464,6 +3493,8 @@ index 0000000..83bb348
 +	{ "Download the cheat database", { "Descargar la base de datos de trucos", "Télécharger la base de codes", "Cheat-Datenbank herunterladen", "Scarica il database dei trucchi", "Baixar o banco de dados de trapaças", "Cheatdatabase downloaden", "Pobierz bazę kodów", "Hile veritabanını indir", "Загрузить базу читов", "チートデータベースをダウンロード", "下载金手指数据库", "下載金手指資料庫", "치트 데이터베이스 다운로드" } },
 +	{ "No cheats for this game yet", { "Aún no hay trucos para este juego", "Pas encore de codes pour ce jeu", "Noch keine Cheats für dieses Spiel", "Ancora nessun trucco per questo gioco", "Ainda não há trapaças para este jogo", "Nog geen cheats voor dit spel", "Brak kodów do tej gry", "Bu oyun için henüz hile yok", "Читов для этой игры пока нет", "このゲームのチートはまだありません", "此游戏暂无金手指", "此遊戲暫無金手指", "이 게임의 치트가 아직 없습니다" } },
 +	{ "Frame generation (30 to 60 FPS, experimental)", { "Generación de fotogramas (30 a 60 FPS, experimental)", "Génération d'images (30 à 60 FPS, expérimental)", "Bildgenerierung (30 auf 60 FPS, experimentell)", "Generazione fotogrammi (da 30 a 60 FPS, sperimentale)", "Geração de quadros (30 para 60 FPS, experimental)", "Framegeneratie (30 naar 60 FPS, experimenteel)", "Generowanie klatek (30 do 60 FPS, eksperymentalne)", "Kare üretimi (30'dan 60 FPS'ye, deneysel)", "Генерация кадров (30 → 60 FPS, экспериментально)", "フレーム生成 (30→60 FPS、実験的)", "帧生成（30→60 FPS，实验性）", "影格生成（30→60 FPS，實驗性）", "프레임 생성 (30→60 FPS, 실험적)" } },
++	{ "Play the PSP game boot when a game starts", { "Mostrar el arranque de PSP al iniciar un juego", "Jouer le démarrage PSP au lancement d'un jeu", "PSP-Startanimation beim Spielstart zeigen", "Mostra l'avvio della PSP all'inizio di un gioco", "Mostrar a abertura do PSP ao iniciar um jogo", "PSP-opstartanimatie tonen bij het starten van een spel", "Pokaż animację startową PSP przy uruchamianiu gry", "Oyun başlarken PSP açılışını oynat", "Показывать заставку PSP при запуске игры", "ゲーム起動時にPSPの起動画面を表示", "启动游戏时播放 PSP 开机画面", "啟動遊戲時播放 PSP 開機畫面", "게임 시작 시 PSP 부팅 화면 재생" } },
++	{ "Off: games start straight away, without the firmware", { "Desactivado: los juegos se inician directamente, sin el firmware", "Désactivé : les jeux démarrent directement, sans le firmware", "Aus: Spiele starten sofort, ohne die Firmware", "Disattivato: i giochi partono subito, senza il firmware", "Desligado: os jogos iniciam direto, sem o firmware", "Uit: spellen starten meteen, zonder de firmware", "Wył.: gry uruchamiają się od razu, bez firmware", "Kapalı: oyunlar doğrudan, yazılım olmadan başlar", "Выкл.: игры запускаются сразу, без прошивки", "オフ：ファームウェアを通さずにすぐ起動", "关闭：不经过固件，直接启动游戏", "關閉：不經過韌體，直接啟動遊戲", "끄기: 펌웨어 없이 게임을 바로 시작" } },
 +};
 +
 +int CurrentLang() {
