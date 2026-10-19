@@ -69,6 +69,7 @@ You bring your own game backups. Nothing copyrighted is bundled: no games, no fi
 **Everything else you'd expect**
 - **RetroAchievements**, online.
 - The PS4's own keyboard for text, with **Cross** to confirm.
+- **Every language PPSSPP has**, in their own script: Japanese, Chinese, Korean, Russian, Arabic, Persian, Hebrew, Thai, Khmer, Lao and the rest. M33's own menus in 13 of them.
 - A 3D animated startup and M33's own theme, icon and menu sounds.
 
 ## Getting started
@@ -203,6 +204,7 @@ firmware game boot) and how to build it: **[docs/TECHNICAL.md](docs/TECHNICAL.md
   PS4 toolchains
 - **[love-ps4](https://github.com/Mari0/love-ps4)**: the reference PS4 setup
 - **[FFmpeg](https://ffmpeg.org)**: video and audio
+- **[FreeType](https://freetype.org)**, **[HarfBuzz](https://harfbuzz.github.io)** and the **[Noto](https://notofonts.github.io)** fonts (SIL Open Font License, `assets/fonts/OFL-Noto.txt`): text in every language
 - **[CWCheat Database Plus](https://github.com/Saramagrean/CWCheat-Database-Plus-)**: the cheat codes
 - **[RCOMage](https://github.com/kakaroto/RCOMage)**: how the PSP firmware's resources are laid out
 - **[RetroAchievements](https://retroachievements.org)**: achievements
