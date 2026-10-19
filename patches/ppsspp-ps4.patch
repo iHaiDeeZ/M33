@@ -581,7 +581,7 @@ index 93654cf..fe1e1a9 100644
  	// Use gameID_EmulatedTimestamp for filename
  	std::string discID = g_paramSFO.GetDiscID();
 diff --git a/Core/Config.cpp b/Core/Config.cpp
-index a15dc9e..cde4a4e 100644
+index a15dc9e..4dc7fb4 100644
 --- a/Core/Config.cpp
 +++ b/Core/Config.cpp
 @@ -267,11 +267,17 @@ static const ConfigSetting generalSettings[] = {
@@ -607,7 +607,7 @@ index a15dc9e..cde4a4e 100644
  	ConfigSetting("CacheFullIsoInRam", SETTING(g_Config, bCacheFullIsoInRam), false, CfgFlag::PER_GAME),
  	ConfigSetting("AutoUpgradeFirmware", SETTING(g_Config, bAutoUpgradeFirmware), true, CfgFlag::DEFAULT),
 +	ConfigSetting("StartInXMB", SETTING(g_Config, bStartInXMB), false, CfgFlag::DEFAULT),
-+	ConfigSetting("M33GameBoot", SETTING(g_Config, bM33GameBoot), true, CfgFlag::DEFAULT),
++	ConfigSetting("M33FirmwareGameBoot", SETTING(g_Config, bM33GameBoot), false, CfgFlag::DEFAULT),
  	ConfigSetting("RemoteISOPort", SETTING(g_Config, iRemoteISOPort), 0, CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOServer", SETTING(g_Config, sLastRemoteISOServer), "", CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOPort", SETTING(g_Config, iLastRemoteISOPort), 0, CfgFlag::DEFAULT),
@@ -649,7 +649,7 @@ index a15dc9e..cde4a4e 100644
  		postShaderChain->Set("PostShader1", "ColorCorrection");
  		postShaderSetting->Set("ColorCorrectionSettingCurrentValue1", 1.0f);
 diff --git a/Core/Config.h b/Core/Config.h
-index 3adb876..f184033 100644
+index 3adb876..f463326 100644
 --- a/Core/Config.h
 +++ b/Core/Config.h
 @@ -253,6 +253,8 @@ struct Config : public ConfigBlock {
@@ -657,7 +657,7 @@ index 3adb876..f184033 100644
  	bool bCacheFullIsoInRam;
  	bool bAutoUpgradeFirmware;
 +	bool bStartInXMB;  // M33 (PS4): boot the installed firmware's XMB at startup
-+	bool bM33GameBoot;  // M33 (PS4): start disc games through the firmware, for its game boot (UI/EmuScreen.cpp)
++	bool bM33GameBoot;  // M33 (PS4): start disc games through the firmware, for its game boot (UI/EmuScreen.cpp); off by default
  	int iRemoteISOPort; // Also used for serving a local remote debugger.
  	std::string sLastRemoteISOServer;
  	int iLastRemoteISOPort;

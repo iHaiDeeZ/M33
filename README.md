@@ -44,8 +44,9 @@ You bring your own game backups. Nothing copyrighted is bundled: no games, no fi
 **A PSP, as it was**
 - **The XMB**: with PSP firmware 6.61 installed, M33 can start straight into the PSP's own menu.
   Every disc game in your folder shows up in its Game column. Hold **L1** while M33 opens to skip it.
-- **The game boot**: starting a game plays the firmware's real startup and game boot animation,
-  from the XMB or from M33's own game list.
+- **The game boot**: games started from the XMB play the firmware's real startup and game boot
+  animation. For games started from M33's own list too, turn on *Settings → System → PSP Firmware →
+  Play the PSP game boot when a game starts* (off by default).
 - **One button to get the firmware**: *Settings → System → PSP Firmware → Download PSP firmware 6.61
   from Sony* fetches Sony's own updater and installs it.
 
@@ -127,6 +128,7 @@ M33 keeps **all of PPSSPP's settings** (quick menu → *Settings*), with these d
 | Rewind | On (per game) |
 | Frame Generation | Off (per game) |
 | Start in the XMB | Off (*Settings → System → PSP Firmware*) |
+| PSP game boot for games from M33's list | Off (*Settings → System → PSP Firmware*) |
 
 ## Your files
 
