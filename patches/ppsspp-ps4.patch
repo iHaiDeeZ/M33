@@ -3534,10 +3534,10 @@ index 0000000..b80c12d
 +const char *M33T(const char *english);
 diff --git a/ps4/PS4Main.cpp b/ps4/PS4Main.cpp
 new file mode 100644
-index 0000000..e1a4465
+index 0000000..8bf4692
 --- /dev/null
 +++ b/ps4/PS4Main.cpp
-@@ -0,0 +1,420 @@
+@@ -0,0 +1,425 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -3812,7 +3812,12 @@ index 0000000..e1a4465
 +	delete graphicsContext;
 +	NativeShutdown();
 +	Trace("exited");
-+	return 0;
++	// Apps may not just end (the PS4 reports that as the app crashing): ask the system to close us,
++	// back to the home screen, or to start us again when PPSSPP asked for a restart.
++	fflush(nullptr);
++	sceSystemServiceLoadExec(g_restartRequested ? "/app0/eboot.bin" : "exit", nullptr);
++	for (;;)
++		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 +}
 +
 +// The emulator's view of a crash (port/ps4_crashlog.cpp calls it after the host stacks): the
