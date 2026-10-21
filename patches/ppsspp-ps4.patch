@@ -721,6 +721,22 @@ index 980495c..82de5d7 100644
  			byte -= 0x100;
  
  			rc_putbyte(&rc, byte);
+diff --git a/Core/HLE/sceDisplay.cpp b/Core/HLE/sceDisplay.cpp
+index 95a18e1..d738d3b 100644
+--- a/Core/HLE/sceDisplay.cpp
++++ b/Core/HLE/sceDisplay.cpp
+@@ -646,6 +646,11 @@ void __DisplayFlip(int cyclesLate) {
+ 
+ 	if (!g_Config.bSkipBufferEffects) {
+ 		postEffectRequiresFlip = duplicateFrames || g_Config.bShaderChainRequires60FPS;
++#if PPSSPP_PLATFORM(PS4)
++		// M33: frame generation shows a made frame in the refresh between two of the game's
++		// (GPU/Common/PresentationCommon.cpp): every refresh is presented
++		postEffectRequiresFlip = postEffectRequiresFlip || g_Config.bM33FrameGen;
++#endif
+ 	}
+ 
+ 	if (!FrameTimingThrottled()) {
 diff --git a/Core/HLE/sceKernelModule.cpp b/Core/HLE/sceKernelModule.cpp
 index dce0c21..0b53d98 100644
 --- a/Core/HLE/sceKernelModule.cpp
@@ -983,10 +999,18 @@ index fbc9a46..87bc905 100644
  	virtual bool GetStencilbuffer(u32 fb_address, int fb_stride, GPUDebugBuffer &buffer);
  	virtual bool GetOutputFramebuffer(GPUDebugBuffer &buffer);
 diff --git a/GPU/Common/PresentationCommon.cpp b/GPU/Common/PresentationCommon.cpp
-index d541b43..7b467df 100644
+index d541b43..189ff19 100644
 --- a/GPU/Common/PresentationCommon.cpp
 +++ b/GPU/Common/PresentationCommon.cpp
-@@ -36,6 +36,7 @@
+@@ -29,6 +29,7 @@
+ #include "Common/Math/geom2d.h"
+ #include "Common/Log.h"
+ #include "Common/TimeUtil.h"
++#include "Common/StringUtils.h"
+ #include "Core/Config.h"
+ #include "Core/ConfigValues.h"
+ #include "Core/System.h"
+@@ -36,6 +37,7 @@
  #include "GPU/Common/PostShader.h"
  #include "GPU/Common/PresentationCommon.h"
  #include "GPU/GPUState.h"
@@ -994,20 +1018,22 @@ index d541b43..7b467df 100644
  #include "Common/GPU/ShaderTranslation.h"
  
  struct Vertex {
-@@ -565,6 +566,12 @@ static void DoReleaseVector(std::vector<T *> &list) {
+@@ -565,6 +567,14 @@ static void DoReleaseVector(std::vector<T *> &list) {
  }
  
  void PresentationCommon::DestroyDeviceObjects() {
 +#if PPSSPP_PLATFORM(PS4)
 +	M33FrameGenRelease();
-+	DoRelease(fgMotion_);
-+	DoRelease(fgInterp_);
++	DoRelease(fgDown_);
++	DoRelease(fgCoarse_);
++	DoRelease(fgRefine_);
++	DoRelease(fgFinal_);
 +	DoRelease(fgVerts_);
 +#endif
  	DoRelease(texColor_);
  	DoRelease(texColorRBSwizzle_);
  	DoRelease(samplerNearest_);
-@@ -668,6 +675,9 @@ void PresentationCommon::UpdateUniforms(bool hasVideo) {
+@@ -668,6 +678,9 @@ void PresentationCommon::UpdateUniforms(bool hasVideo) {
  }
  
  void PresentationCommon::RunPostshaderPasses(const DisplayLayoutConfig &config, OutputFlags flags, int uvRotation, float u0, float v0, float u1, float v1) {
@@ -1017,7 +1043,7 @@ index d541b43..7b467df 100644
  	draw_->Invalidate(InvalidationFlags::CACHED_RENDER_STATE);
  
  	postShaderOutput_ = nullptr;
-@@ -1017,7 +1027,13 @@ void PresentationCommon::CalculateRenderResolution(const DisplayLayoutConfig &co
+@@ -1017,7 +1030,13 @@ void PresentationCommon::CalculateRenderResolution(const DisplayLayoutConfig &co
  		if (firstSSAAFilterLevel >= 2)
  			zoom *= firstSSAAFilterLevel;
  	}
@@ -1031,7 +1057,7 @@ index d541b43..7b467df 100644
  		zoom = 1;
  
  	if (upscaling) {
-@@ -1045,3 +1061,273 @@ void PresentationCommon::CalculateRenderResolution(const DisplayLayoutConfig &co
+@@ -1045,3 +1064,529 @@ void PresentationCommon::CalculateRenderResolution(const DisplayLayoutConfig &co
  
  	*scaleFactor = zoom;
  }
@@ -1043,18 +1069,25 @@ index d541b43..7b467df 100644
 +// previous frame and the new one, the second the new one: 60 different pictures a second, the
 +// real ones a refresh (~16 ms) later. Only for games at 30 (a frame every 2 refreshes); 60 fps
 +// games, and everything else, are left alone. Off by default (Settings > Graphics, or the quick
-+// menu).
++// menu). While it's on the emulator presents every refresh (Core/HLE/sceDisplay.cpp), as with
++// "Render duplicate frames".
 +//
 +// After AMD's frame interpolation without the game's own motion vectors (AFMF's way: the PSP's
-+// renderer has none): the motion is found by comparing the two frames.
-+// 1. Motion: both frames at the PSP's own size (~480x272), in blocks of 8 pixels; for each block
-+//    the shift (up to 8 pixels each way, 17x17 tries, 16 samples a try) that matches the new frame
-+//    best, small shifts favoured. One pixel per block, RGBA8: the shift, and how well it matched.
-+// 2. The frame: at the game's rendering size, each pixel from the previous frame half a shift back
-+//    and the new one half a shift on, averaged; where those two disagree (something appearing,
-+//    disappearing, the HUD, a shift that's wrong) a plain cross-fade of the two frames instead.
-+// Both are post-processing shaders, compiled like PPSSPP's own; the result goes on through the
-+// post-processing (FSR's sharpening...) in place of the game's frame.
++// renderer has none): the motion is found by comparing the two frames, coarse to fine.
++// 1. Each frame small: at the PSP's own size (~480x272), a half, a quarter and an eighth of it.
++// 2. At the eighth, for each pixel (8x8 PSP pixels): every shift up to 6 pixels each way (48 PSP
++//    pixels), measured from the moment halfway: the old frame half of it back against the new one
++//    half of it on, and each frame against the other a whole shift away (so a shift that jumps
++//    over a thin thing, both ends on the sky, doesn't fit).
++// 3. Each finer level: the best of the coarser motions around (or none), then nudged in smaller and
++//    smaller steps; at the PSP's size, to a quarter of a pixel.
++// 4. The frame, at the game's rendering size: each pixel from the old frame half its motion back
++//    and the new one half on, averaged. The motion blended from the four around, its own, its
++//    neighbours' or none (the HUD), whichever fits; where none does, a cross-fade.
++// Motions are kept in RGBA8, 16 bits a coordinate. All are post-processing shaders, compiled like
++// PPSSPP's own; the result goes on through the post-processing (FSR's sharpening...) in place of the
++// game's frame. Tuned against the true halfway frames of GTA and God of War pictures moved (driving,
++// turning, a car crossing, a slow pan): 8 to 13 dB closer than the block matching it replaces.
 +
 +// Frames made so far (the FPS counter shows how many a second, UI/DebugOverlay.cpp).
 +int g_m33FramesMade = 0;
@@ -1073,8 +1106,25 @@ index d541b43..7b467df 100644
 +}
 +)";
 +
-+// sampler0: the previous frame, small; sampler1: the new one, small. u_setting.xy: one small pixel.
-+static const char *const kFgMotion = R"(
++// A frame at half (or a quarter of) its size. sampler0: the frame
++static const char *const kFgDown = R"(
++#ifdef GL_ES
++precision highp float;
++#endif
++uniform sampler2D sampler0;
++uniform vec2 u_pixelDelta;
++varying vec2 v_texcoord0;
++// A box filter: four taps a quarter of a target pixel from its centre (2x2 or 4x4 source pixels)
++void main() {
++  vec2 q = 0.25 * u_pixelDelta;
++  vec3 c = texture2D(sampler0, v_texcoord0 + vec2(-q.x, -q.y)).rgb + texture2D(sampler0, v_texcoord0 + vec2(q.x, -q.y)).rgb
++    + texture2D(sampler0, v_texcoord0 + vec2(-q.x, q.y)).rgb + texture2D(sampler0, v_texcoord0 + vec2(q.x, q.y)).rgb;
++  gl_FragColor = vec4(0.25 * c, 1.0);
++}
++)";
++
++// The motion at the coarsest level. sampler0, sampler1: the old and the new frame, small
++static const char *const kFgCoarse = R"(
 +#ifdef GL_ES
 +precision highp float;
 +precision highp int;
@@ -1082,38 +1132,171 @@ index d541b43..7b467df 100644
 +uniform sampler2D sampler0;
 +uniform sampler2D sampler1;
 +uniform vec4 u_setting;
++uniform vec4 u_time;
 +varying vec2 v_texcoord0;
++// Motion vectors, in PSP pixels, kept in RGBA8 at 1/256 of a pixel: x in RG, y in BA
++vec4 Pack(vec2 v) {
++  vec2 e = clamp(floor((v + 128.0) * 256.0 + 0.5), 0.0, 65535.0);
++  vec2 hi = floor(e / 256.0);
++  vec2 lo = e - hi * 256.0;
++  return vec4(hi.x, lo.x, hi.y, lo.y) / 255.0;
++}
++vec2 Unpack(vec4 t) {
++  vec4 b = floor(t * 255.0 + 0.5);
++  return vec2(b.x * 256.0 + b.y, b.z * 256.0 + b.w) / 256.0 - 128.0;
++}
++// How badly a motion d (in UV) fits around uv, over 3x3 taps sp apart (or 5, a cross, when
++// u_time.z is 1): the old frame d/2 back against the new one d/2 on (the picture halfway), and,
++// u_time.y as much, each frame here against the other a whole d away (so a motion that skips over
++// a thin thing, both ends on the sky, is no fit). PrepareCost first, for "each frame here".
++vec3 gHere0[9];
++vec3 gHere1[9];
++void PrepareCost(vec2 uv, vec2 sp) {
++  for (int i = 0; i < 9; i++) {
++    vec2 p = uv + vec2(float(i - (i / 3) * 3 - 1), float(i / 3 - 1)) * sp;
++    gHere0[i] = texture2D(sampler0, p).rgb;
++    gHere1[i] = texture2D(sampler1, p).rgb;
++  }
++}
++float Cost(vec2 uv, vec2 d, vec2 sp) {
++  float s = 0.0;
++  for (int i = 0; i < 9; i++) {
++    int x = i - (i / 3) * 3 - 1;
++    int y = i / 3 - 1;
++    if (u_time.z > 0.5 && x != 0 && y != 0)
++      continue;
++    vec2 p = uv + vec2(float(x), float(y)) * sp;
++    vec3 e = abs(texture2D(sampler0, p - 0.5 * d).rgb - texture2D(sampler1, p + 0.5 * d).rgb);
++    if (u_time.y > 0.0)
++      e += u_time.y * (abs(gHere0[i] - texture2D(sampler1, p + d).rgb) + abs(gHere1[i] - texture2D(sampler0, p - d).rgb));
++    s += e.r + e.g + e.b;
++  }
++  return u_time.z > 0.5 ? s * 1.8 : s;
++}
++// The coarsest level: every shift up to 6 pixels each way. u_setting.x: PSP pixels per pixel here
 +void main() {
-+  vec2 px = u_setting.xy;
-+  float best = 1000.0;
++  vec2 px = 1.0 / vec2(textureSize(sampler0, 0));
++  PrepareCost(v_texcoord0, px);
++  float best = 1.0e9;
 +  vec2 bestD = vec2(0.0);
-+  for (int dy = -8; dy <= 8; dy++) {
-+    for (int dx = -8; dx <= 8; dx++) {
-+      vec2 d = vec2(float(dx), float(dy)) * px;
-+      float sad = 0.0;
-+      for (int sy = 0; sy < 4; sy++) {
-+        for (int sx = 0; sx < 4; sx++) {
-+          vec2 o = (vec2(float(sx), float(sy)) * 2.0 - 3.0) * px;
-+          vec3 a = texture2D(sampler0, v_texcoord0 + o).rgb;
-+          vec3 b = texture2D(sampler1, v_texcoord0 + o + d).rgb;
-+          vec3 e = abs(a - b);
-+          sad += e.r + e.g + e.b;
-+        }
-+      }
-+      sad += 0.004 * float(dx * dx + dy * dy);
-+      if (sad < best) {
-+        best = sad;
-+        bestD = vec2(float(dx), float(dy));
++  for (int dy = -6; dy <= 6; dy++) {
++    for (int dx = -6; dx <= 6; dx++) {
++      vec2 d = vec2(float(dx), float(dy));
++      float c = Cost(v_texcoord0, d * px, px) + 0.003 * dot(d, d);
++      if (c < best) {
++        best = c;
++        bestD = d;
 +      }
 +    }
 +  }
-+  gl_FragColor = vec4(bestD / 16.0 + 0.5, clamp(best / 8.0, 0.0, 1.0), 1.0);
++  gl_FragColor = Pack(bestD * u_setting.x);
 +}
 +)";
 +
-+// sampler0: the previous frame; sampler1: the new one; sampler2: the motion. u_setting.xy: one
-+// small pixel in UV.
-+static const char *const kFgInterp = R"(
++// The motion one level finer. sampler0, sampler1: the frames at this level; sampler2: the motion
++// one level coarser
++static const char *const kFgRefine = R"(
++#ifdef GL_ES
++precision highp float;
++precision highp int;
++#endif
++uniform sampler2D sampler0;
++uniform sampler2D sampler1;
++uniform sampler2D sampler2;
++uniform vec4 u_setting;
++uniform vec4 u_time;
++varying vec2 v_texcoord0;
++// Motion vectors, in PSP pixels, kept in RGBA8 at 1/256 of a pixel: x in RG, y in BA
++vec4 Pack(vec2 v) {
++  vec2 e = clamp(floor((v + 128.0) * 256.0 + 0.5), 0.0, 65535.0);
++  vec2 hi = floor(e / 256.0);
++  vec2 lo = e - hi * 256.0;
++  return vec4(hi.x, lo.x, hi.y, lo.y) / 255.0;
++}
++vec2 Unpack(vec4 t) {
++  vec4 b = floor(t * 255.0 + 0.5);
++  return vec2(b.x * 256.0 + b.y, b.z * 256.0 + b.w) / 256.0 - 128.0;
++}
++// How badly a motion d (in UV) fits around uv, over 3x3 taps sp apart (or 5, a cross, when
++// u_time.z is 1): the old frame d/2 back against the new one d/2 on (the picture halfway), and,
++// u_time.y as much, each frame here against the other a whole d away (so a motion that skips over
++// a thin thing, both ends on the sky, is no fit). PrepareCost first, for "each frame here".
++vec3 gHere0[9];
++vec3 gHere1[9];
++void PrepareCost(vec2 uv, vec2 sp) {
++  for (int i = 0; i < 9; i++) {
++    vec2 p = uv + vec2(float(i - (i / 3) * 3 - 1), float(i / 3 - 1)) * sp;
++    gHere0[i] = texture2D(sampler0, p).rgb;
++    gHere1[i] = texture2D(sampler1, p).rgb;
++  }
++}
++float Cost(vec2 uv, vec2 d, vec2 sp) {
++  float s = 0.0;
++  for (int i = 0; i < 9; i++) {
++    int x = i - (i / 3) * 3 - 1;
++    int y = i / 3 - 1;
++    if (u_time.z > 0.5 && x != 0 && y != 0)
++      continue;
++    vec2 p = uv + vec2(float(x), float(y)) * sp;
++    vec3 e = abs(texture2D(sampler0, p - 0.5 * d).rgb - texture2D(sampler1, p + 0.5 * d).rgb);
++    if (u_time.y > 0.0)
++      e += u_time.y * (abs(gHere0[i] - texture2D(sampler1, p + d).rgb) + abs(gHere1[i] - texture2D(sampler0, p - d).rgb));
++    s += e.r + e.g + e.b;
++  }
++  return u_time.z > 0.5 ? s * 1.8 : s;
++}
++vec2 Field(ivec2 p, ivec2 size) {
++  return Unpack(texelFetch(sampler2, clamp(p, ivec2(0), size - 1), 0));
++}
++// One level finer than the motion in sampler2: the best of its motions around (and none), then
++// nudged. u_setting.x: PSP pixels per pixel here; y: the patch spacing (pixels here); z, w,
++// u_time.x: the nudges (pixels here, 0: no more)
++void main() {
++  vec2 px = 1.0 / vec2(textureSize(sampler0, 0));
++  ivec2 fs = textureSize(sampler2, 0);
++  float scale = u_setting.x;
++  vec2 sp = px * u_setting.y;
++  vec2 toUv = px / scale;
++  PrepareCost(v_texcoord0, sp);
++  vec2 fp = v_texcoord0 * vec2(fs) - 0.5;
++  ivec2 f0 = ivec2(floor(fp));
++  vec2 fr = fp - floor(fp);
++  vec2 pred = mix(mix(Field(f0, fs), Field(f0 + ivec2(1, 0), fs), fr.x),
++    mix(Field(f0 + ivec2(0, 1), fs), Field(f0 + ivec2(1, 1), fs), fr.x), fr.y);
++  vec2 best = pred;
++  float bestC = Cost(v_texcoord0, pred * toUv, sp);
++  ivec2 fc = ivec2(floor(v_texcoord0 * vec2(fs)));
++  for (int k = 0; k < 10; k++) {
++    vec2 v = k < 9 ? Field(fc + ivec2(k - (k / 3) * 3 - 1, k / 3 - 1), fs) : vec2(0.0);
++    float c = Cost(v_texcoord0, v * toUv, sp) + 0.02 * length(v - pred) / scale;
++    if (c < bestC) {
++      bestC = c;
++      best = v;
++    }
++  }
++  for (int r = 0; r < 3; r++) {
++    float stepPx = (r == 0 ? u_setting.z : r == 1 ? u_setting.w : u_time.x) * scale;
++    if (stepPx <= 0.0)
++      break;
++    vec2 center = best;
++    for (int k = 0; k < 9; k++) {
++      if (k == 4)
++        continue;
++      vec2 v = center + vec2(float(k - (k / 3) * 3 - 1), float(k / 3 - 1)) * stepPx;
++      float c = Cost(v_texcoord0, v * toUv, sp) + 0.02 * length(v - pred) / scale;
++      if (c < bestC) {
++        bestC = c;
++        best = v;
++      }
++    }
++  }
++  gl_FragColor = Pack(best);
++}
++)";
++
++// The frame halfway. sampler0, sampler1: the old and the new frame; sampler2: the motion at the
++// PSP's size
++static const char *const kFgFinal = R"(
 +#ifdef GL_ES
 +precision highp float;
 +precision highp int;
@@ -1123,25 +1306,74 @@ index d541b43..7b467df 100644
 +uniform sampler2D sampler2;
 +uniform vec4 u_setting;
 +varying vec2 v_texcoord0;
++// Motion vectors, in PSP pixels, kept in RGBA8 at 1/256 of a pixel: x in RG, y in BA
++vec4 Pack(vec2 v) {
++  vec2 e = clamp(floor((v + 128.0) * 256.0 + 0.5), 0.0, 65535.0);
++  vec2 hi = floor(e / 256.0);
++  vec2 lo = e - hi * 256.0;
++  return vec4(hi.x, lo.x, hi.y, lo.y) / 255.0;
++}
++vec2 Unpack(vec4 t) {
++  vec4 b = floor(t * 255.0 + 0.5);
++  return vec2(b.x * 256.0 + b.y, b.z * 256.0 + b.w) / 256.0 - 128.0;
++}
++// The frame halfway: each pixel from the old frame half its motion back and the new one half on.
++// Its own motion, its neighbours (an edge between two) or none (the HUD), whichever fits best;
++// where nothing does, a cross-fade. u_setting.x: the neighbours handicap, y, z: the cross-fade range
 +void main() {
-+  vec4 m = texture2D(sampler2, v_texcoord0);
-+  vec2 d = (m.rg - 0.5) * 16.0 * u_setting.xy;
-+  vec3 a = texture2D(sampler0, v_texcoord0 - 0.5 * d).rgb;
-+  vec3 b = texture2D(sampler1, v_texcoord0 + 0.5 * d).rgb;
-+  vec3 warped = 0.5 * (a + b);
-+  vec3 plain = 0.5 * (texture2D(sampler0, v_texcoord0).rgb + texture2D(sampler1, v_texcoord0).rgb);
-+  vec3 e = abs(a - b);
-+  float err = max(e.r, max(e.g, e.b));
-+  float w = smoothstep(0.06, 0.22, err);
-+  gl_FragColor = vec4(mix(warped, plain, w), 1.0);
++  ivec2 fs = textureSize(sampler2, 0);
++  vec2 fsz = vec2(fs);
++  ivec2 c = ivec2(floor(v_texcoord0 * fsz));
++  vec2 fp = v_texcoord0 * fsz - 0.5;
++  ivec2 f0 = ivec2(floor(fp));
++  vec2 fr = fp - floor(fp);
++  vec2 smooth0 = mix(mix(Unpack(texelFetch(sampler2, clamp(f0, ivec2(0), fs - 1), 0)), Unpack(texelFetch(sampler2, clamp(f0 + ivec2(1, 0), ivec2(0), fs - 1), 0)), fr.x),
++    mix(Unpack(texelFetch(sampler2, clamp(f0 + ivec2(0, 1), ivec2(0), fs - 1), 0)), Unpack(texelFetch(sampler2, clamp(f0 + ivec2(1, 1), ivec2(0), fs - 1), 0)), fr.x), fr.y);
++  vec2 cand[7];
++  cand[6] = Unpack(texelFetch(sampler2, clamp(c, ivec2(0), fs - 1), 0));
++  cand[0] = smooth0;
++  cand[1] = Unpack(texelFetch(sampler2, clamp(c + ivec2(-1, 0), ivec2(0), fs - 1), 0));
++  cand[2] = Unpack(texelFetch(sampler2, clamp(c + ivec2(1, 0), ivec2(0), fs - 1), 0));
++  cand[3] = Unpack(texelFetch(sampler2, clamp(c + ivec2(0, -1), ivec2(0), fs - 1), 0));
++  cand[4] = Unpack(texelFetch(sampler2, clamp(c + ivec2(0, 1), ivec2(0), fs - 1), 0));
++  cand[5] = vec2(0.0);
++  vec3 here0 = texture2D(sampler0, v_texcoord0).rgb;
++  vec3 here1 = texture2D(sampler1, v_texcoord0).rgb;
++  vec3 bestA = vec3(0.0), bestB = vec3(0.0);
++  float bestE = 1.0e9, bestFit = 1.0e9;
++  for (int k = 0; k < 7; k++) {
++    vec2 d = cand[k] / fsz;
++    vec3 a = texture2D(sampler0, v_texcoord0 - 0.5 * d).rgb;
++    vec3 b = texture2D(sampler1, v_texcoord0 + 0.5 * d).rgb;
++    vec3 e3 = abs(a - b);
++    vec3 f3 = e3 + 0.5 * abs(here0 - texture2D(sampler1, v_texcoord0 + d).rgb) + 0.5 * abs(here1 - texture2D(sampler0, v_texcoord0 - d).rgb);
++    float fit = f3.r + f3.g + f3.b + (k == 0 ? 0.0 : u_setting.x);
++    if (fit < bestFit) {
++      bestFit = fit;
++      bestE = e3.r + e3.g + e3.b;
++      bestA = a;
++      bestB = b;
++    }
++  }
++  vec3 warped = 0.5 * (bestA + bestB);
++  vec3 plain = 0.5 * (here0 + here1);
++  gl_FragColor = vec4(mix(warped, plain, smoothstep(u_setting.y, u_setting.z, bestE)), 1.0);
 +}
 +)";
 +
 +void PresentationCommon::M33FrameGenRelease() {
-+	for (Draw::Framebuffer **fb : { &fgFrame_[0], &fgFrame_[1], &fgMade_, &fgSmall_[0], &fgSmall_[1], &fgMotionFb_, &fgOutFb_[0], &fgOutFb_[1] }) {
++	for (Draw::Framebuffer **fb : { &fgFrame_[0], &fgFrame_[1], &fgMade_, &fgOutFb_[0], &fgOutFb_[1] }) {
 +		if (*fb) {
 +			(*fb)->Release();
 +			*fb = nullptr;
++		}
++	}
++	for (int l = 0; l < kFgLevels; l++) {
++		for (Draw::Framebuffer **fb : { &fgPyr_[0][l], &fgPyr_[1][l], &fgField_[l] }) {
++			if (*fb) {
++				(*fb)->Release();
++				*fb = nullptr;
++			}
 +		}
 +	}
 +	fgW_ = fgH_ = 0;
@@ -1149,32 +1381,35 @@ index d541b43..7b467df 100644
 +	fgHavePrev_ = false;
 +}
 +
-+bool PresentationCommon::M33FrameGenPass(Draw::Pipeline *pipeline, Draw::Framebuffer *target, Draw::Framebuffer *t0, Draw::Framebuffer *t1, Draw::Framebuffer *t2, const float setting[4], float texelW, float texelH) {
++void PresentationCommon::M33FrameGenPass(Draw::Pipeline *pipeline, Draw::Framebuffer *target, Draw::Framebuffer *t0, Draw::Framebuffer *t1, Draw::Framebuffer *t2, const float setting[4], const float extra[4]) {
 +	int w = 0, h = 0;
 +	draw_->GetFramebufferDimensions(target, &w, &h);
 +	draw_->BindFramebufferAsRenderTarget(target, { Draw::RPAction::DONT_CARE, Draw::RPAction::DONT_CARE, Draw::RPAction::DONT_CARE }, "M33FrameGen");
-+	draw_->BindFramebufferAsTexture(t0, 0, Draw::Aspect::COLOR_BIT, 0);
-+	draw_->BindFramebufferAsTexture(t1, 1, Draw::Aspect::COLOR_BIT, 0);
-+	if (t2)
-+		draw_->BindFramebufferAsTexture(t2, 2, Draw::Aspect::COLOR_BIT, 0);
++	// (the slots a pass doesn't use get the empty texture, not whatever an earlier pass left there)
++	Draw::Framebuffer *const inputs[3] = { t0, t1, t2 };
++	for (int i = 0; i < 3; i++) {
++		if (inputs[i]) {
++			draw_->BindFramebufferAsTexture(inputs[i], i, Draw::Aspect::COLOR_BIT, 0);
++		} else {
++			Draw::Texture *none = nullptr;
++			draw_->BindTextures(i, 1, &none);
++		}
++	}
 +	Draw::Viewport viewport{ 0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f };
 +	draw_->SetViewport(viewport);
 +	draw_->SetScissorRect(0, 0, w, h);
 +	PostShaderUniforms uniforms{};
-+	uniforms.texelDelta[0] = texelW;
-+	uniforms.texelDelta[1] = texelH;
 +	uniforms.pixelDelta[0] = 1.0f / w;
 +	uniforms.pixelDelta[1] = 1.0f / h;
 +	memcpy(uniforms.setting, setting, sizeof(uniforms.setting));
++	memcpy(uniforms.time, extra, sizeof(uniforms.time));
 +	draw_->BindPipeline(pipeline);
 +	draw_->UpdateDynamicUniformBuffer(&uniforms, sizeof(uniforms));
 +	Draw::SamplerState *sampler = samplerLinear_;
-+	draw_->BindSamplerStates(0, 1, &sampler);
-+	draw_->BindSamplerStates(1, 1, &sampler);
-+	draw_->BindSamplerStates(2, 1, &sampler);
++	for (int i = 0; i < 3; i++)
++		draw_->BindSamplerStates(i, 1, &sampler);
 +	draw_->BindVertexBuffer(fgVerts_, 0);
 +	draw_->Draw(4, 0);
-+	return true;
 +}
 +
 +void PresentationCommon::M33FrameGen(float u0, float v0, float u1, float v1) {
@@ -1193,6 +1428,10 @@ index d541b43..7b467df 100644
 +	fgInterval_ = fgFlips_ < 0 ? 0 : fgSinceFlip_ + 1;
 +	fgSinceFlip_ = 0;
 +	fgFlips_ = flips;
++	// (after a pause, the quick menu, rewinding: the frame before is from another moment)
++	const double now = time_now_d();
++	const bool recent = now - fgFlipAt_ < 0.1;
++	fgFlipAt_ = now;
 +
 +	// the shown part of the game's buffer (its buffers can differ in size; the shown part doesn't)
 +	int bw = 0, bh = 0;
@@ -1207,27 +1446,37 @@ index d541b43..7b467df 100644
 +		const int scale = std::max(1, (int)std::lround(h / 272.0));
 +		fgW_ = w;
 +		fgH_ = h;
-+		fgSW_ = std::max(16, w / scale);
-+		fgSH_ = std::max(16, h / scale);
-+		fgFrame_[0] = draw_->CreateFramebuffer({ w, h, 1, 1, 0, false, "M33FgFrame0" });
-+		fgFrame_[1] = draw_->CreateFramebuffer({ w, h, 1, 1, 0, false, "M33FgFrame1" });
++		fgLW_[0] = std::max(16, w / scale);
++		fgLH_[0] = std::max(16, h / scale);
++		for (int l = 1; l < kFgLevels; l++) {
++			fgLW_[l] = std::max(1, fgLW_[l - 1] / 2);
++			fgLH_[l] = std::max(1, fgLH_[l - 1] / 2);
++		}
++		bool ok = true;
++		for (int i = 0; i < 2; i++) {
++			fgFrame_[i] = draw_->CreateFramebuffer({ w, h, 1, 1, 0, false, "M33FgFrame" });
++			ok = ok && fgFrame_[i];
++			for (int l = 0; l < kFgLevels; l++) {
++				fgPyr_[i][l] = draw_->CreateFramebuffer({ fgLW_[l], fgLH_[l], 1, 1, 0, false, "M33FgSmall" });
++				ok = ok && fgPyr_[i][l];
++			}
++		}
++		for (int l = 0; l < kFgLevels; l++) {
++			fgField_[l] = draw_->CreateFramebuffer({ fgLW_[l], fgLH_[l], 1, 1, 0, false, "M33FgMotion" });
++			ok = ok && fgField_[l];
++		}
 +		fgMade_ = draw_->CreateFramebuffer({ w, h, 1, 1, 0, false, "M33FgMade" });
-+		fgSmall_[0] = draw_->CreateFramebuffer({ fgSW_, fgSH_, 1, 1, 0, false, "M33FgSmall0" });
-+		fgSmall_[1] = draw_->CreateFramebuffer({ fgSW_, fgSH_, 1, 1, 0, false, "M33FgSmall1" });
-+		fgMotionFb_ = draw_->CreateFramebuffer({ std::max(1, fgSW_ / 8), std::max(1, fgSH_ / 8), 1, 1, 0, false, "M33FgMotion" });
-+		if (!fgFrame_[0] || !fgFrame_[1] || !fgMade_ || !fgSmall_[0] || !fgSmall_[1] || !fgMotionFb_) {
++		if (!ok || !fgMade_) {
 +			ERROR_LOG(Log::G3D, "M33 frame generation: no framebuffers for %dx%d, off", w, h);
 +			M33FrameGenRelease();
 +			fgFailed_ = true;
 +			return;
 +		}
-+		NOTICE_LOG(Log::G3D, "M33 frame generation: %dx%d pictures, motion at %dx%d", w, h, fgSW_, fgSH_);
++		NOTICE_LOG(Log::G3D, "M33 frame generation: %dx%d pictures, motion at %dx%d down to %dx%d", w, h, fgLW_[0], fgLH_[0], fgLW_[kFgLevels - 1], fgLH_[kFgLevels - 1]);
 +	}
-+	if (!fgMotion_ || !fgInterp_) {
-+		std::string vsError, fsError, fs2Error;
-+		Draw::ShaderModule *vs = CompileShaderModule(ShaderStage::Vertex, GLSL_1xx, kFgVertex, &vsError);
-+		Draw::ShaderModule *motion = CompileShaderModule(ShaderStage::Fragment, GLSL_1xx, kFgMotion, &fsError);
-+		Draw::ShaderModule *interp = CompileShaderModule(ShaderStage::Fragment, GLSL_1xx, kFgInterp, &fs2Error);
++	if (!fgDown_) {
++		std::string errors;
++		Draw::ShaderModule *vs = CompileShaderModule(ShaderStage::Vertex, GLSL_1xx, kFgVertex, &errors);
 +		UniformBufferDesc desc{ sizeof(PostShaderUniforms), {
 +			{ "gl_HalfPixel", 0, -1, UniformType::FLOAT4, offsetof(PostShaderUniforms, gl_HalfPixel) },
 +			{ "u_texelDelta", 1, 1, UniformType::FLOAT2, offsetof(PostShaderUniforms, texelDelta) },
@@ -1238,40 +1487,74 @@ index d541b43..7b467df 100644
 +			{ "u_video", 6, 6, UniformType::FLOAT1, offsetof(PostShaderUniforms, video) },
 +			{ "u_vr", 7, 7, UniformType::FLOAT1, offsetof(PostShaderUniforms, vr) },
 +		} };
-+		if (vs && motion)
-+			fgMotion_ = CreatePipeline({ vs, motion }, true, &desc);
-+		if (vs && interp)
-+			fgInterp_ = CreatePipeline({ vs, interp }, true, &desc);
-+		for (Draw::ShaderModule *m : { vs, motion, interp })
-+			if (m)
-+				m->Release();
-+		if (!fgMotion_ || !fgInterp_) {
-+			ERROR_LOG(Log::G3D, "M33 frame generation: shaders failed, off:\n%s\n%s\n%s", vsError.c_str(), fsError.c_str(), fs2Error.c_str());
++		Draw::Pipeline **pipelines[4] = { &fgDown_, &fgCoarse_, &fgRefine_, &fgFinal_ };
++		const char *const sources[4] = { kFgDown, kFgCoarse, kFgRefine, kFgFinal };
++		bool ok = vs != nullptr;
++		for (int i = 0; i < 4 && ok; i++) {
++			std::string error;
++			Draw::ShaderModule *fs = CompileShaderModule(ShaderStage::Fragment, GLSL_1xx, sources[i], &error);
++			if (fs) {
++				*pipelines[i] = CreatePipeline({ vs, fs }, true, &desc);
++				fs->Release();
++			}
++			if (!*pipelines[i]) {
++				errors += StringFromFormat("\nshader %d: %s", i, error.c_str());
++				ok = false;
++			}
++		}
++		if (vs)
++			vs->Release();
++		if (!ok) {
++			ERROR_LOG(Log::G3D, "M33 frame generation: shaders failed, off:%s", errors.c_str());
 +			fgFailed_ = true;
 +			M33FrameGenRelease();
++			for (Draw::Pipeline **p : pipelines)
++				DoRelease(*p);
 +			return;
 +		}
-+		// a full-screen quad, as the post-processing passes draw theirs into framebuffers
-+		struct V { float x, y, z, u, v; uint32_t rgba; };
-+		const V verts[4] = {
-+			{ -1.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0xFFFFFFFF },
-+			{ 1.0f, -1.0f, 0.0f, 1.0f, 0.0f, 0xFFFFFFFF },
-+			{ -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0xFFFFFFFF },
-+			{ 1.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFF },
-+		};
-+		fgVerts_ = draw_->CreateBuffer(sizeof(verts), Draw::BufferUsageFlag::VERTEXDATA);
-+		draw_->UpdateBuffer(fgVerts_, (const uint8_t *)verts, 0, sizeof(verts), Draw::UPDATE_DISCARD);
++		if (!fgVerts_) {
++			// a full-screen quad, as the post-processing passes draw theirs into framebuffers
++			struct V { float x, y, z, u, v; uint32_t rgba; };
++			const V verts[4] = {
++				{ -1.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0xFFFFFFFF },
++				{ 1.0f, -1.0f, 0.0f, 1.0f, 0.0f, 0xFFFFFFFF },
++				{ -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0xFFFFFFFF },
++				{ 1.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFF },
++			};
++			fgVerts_ = draw_->CreateBuffer(sizeof(verts), Draw::BufferUsageFlag::VERTEXDATA);
++			draw_->UpdateBuffer(fgVerts_, (const uint8_t *)verts, 0, sizeof(verts), Draw::UPDATE_DISCARD);
++		}
 +	}
 +
-+	// the new frame's shown part into our own buffer, and small for the motion
++	// the new frame's shown part into our own buffer, and small, at every level
 +	Draw::Framebuffer *cur = fgFrame_[fgCur_], *prev = fgFrame_[fgCur_ ^ 1];
 +	draw_->BlitFramebuffer(srcFramebuffer_, x0, y0, x1, y1, cur, 0, 0, w, h, Draw::Aspect::COLOR_BIT, Draw::FB_BLIT_NEAREST, "M33FgFrame");
-+	draw_->BlitFramebuffer(cur, 0, 0, w, h, fgSmall_[fgCur_], 0, 0, fgSW_, fgSH_, Draw::Aspect::COLOR_BIT, Draw::FB_BLIT_LINEAR, "M33FgSmall");
-+	const bool make = fgHavePrev_ && fgInterval_ == 2;
++	const float none[4] = {};
++	M33FrameGenPass(fgDown_, fgPyr_[fgCur_][0], cur, nullptr, nullptr, none, none);
++	for (int l = 1; l < kFgLevels; l++)
++		M33FrameGenPass(fgDown_, fgPyr_[fgCur_][l], fgPyr_[fgCur_][l - 1], nullptr, nullptr, none, none);
++
++	const bool make = fgHavePrev_ && recent && fgInterval_ == 2;
 +	if (make) {
-+		const float px[4] = { 1.0f / fgSW_, 1.0f / fgSH_, 0.0f, 0.0f };
-+		M33FrameGenPass(fgMotion_, fgMotionFb_, fgSmall_[fgCur_ ^ 1], fgSmall_[fgCur_], nullptr, px, 1.0f / fgSW_, 1.0f / fgSH_);
-+		M33FrameGenPass(fgInterp_, fgMade_, prev, cur, fgMotionFb_, px, 1.0f / w, 1.0f / h);
++		Draw::Framebuffer *const *p0 = fgPyr_[fgCur_ ^ 1], *const *p1 = fgPyr_[fgCur_];
++		// PSP pixels per pixel at each level
++		float scale[kFgLevels];
++		for (int l = 0; l < kFgLevels; l++)
++			scale[l] = (float)fgLW_[0] / (float)fgLW_[l];
++		// the motion: everything at the coarsest level, then finer: u_setting = scale, the patch's
++		// spacing, two nudges; u_time = a third nudge, how much the frames count against each other a
++		// whole motion away, 5 taps instead of 9
++		const int top = kFgLevels - 1;
++		const float coarse[4] = { scale[top], 0.0f, 0.0f, 0.0f }, coarseX[4] = { 0.0f, 0.5f, 0.0f, 0.0f };
++		M33FrameGenPass(fgCoarse_, fgField_[top], p0[top], p1[top], nullptr, coarse, coarseX);
++		for (int l = top - 1; l >= 0; l--) {
++			const float set[4] = { scale[l], l == 0 ? 2.0f : 1.0f, 1.0f, 0.5f };
++			const float setX[4] = { l == 0 ? 0.25f : 0.0f, 0.5f, l == 0 ? 1.0f : 0.0f, 0.0f };
++			M33FrameGenPass(fgRefine_, fgField_[l], p0[l], p1[l], fgField_[l + 1], set, setX);
++		}
++		// the frame: the neighbours' handicap, the cross-fade's range
++		const float fin[4] = { 0.1f, 0.3f, 0.8f, 0.0f };
++		M33FrameGenPass(fgFinal_, fgMade_, prev, cur, fgField_[0], fin, none);
 +		// back into a buffer laid out as the game's, so the picture's position in it is the same
 +		int slot = -1;
 +		for (int i = 0; i < 2; i++)
@@ -1296,7 +1579,6 @@ index d541b43..7b467df 100644
 +	}
 +	fgCur_ ^= 1;
 +	fgHavePrev_ = true;
-+	const double now = time_now_d();
 +	if (now - fgLogAt_ > 30.0) {
 +		if (fgLogAt_ > 0.0)
 +			NOTICE_LOG(Log::G3D, "M33 frame generation: %d frames made in %.0f s (the game a frame every %d refreshes)", fgMadeCount_, now - fgLogAt_, fgInterval_);
@@ -1306,7 +1588,7 @@ index d541b43..7b467df 100644
 +}
 +#endif  // PPSSPP_PLATFORM(PS4)
 diff --git a/GPU/Common/PresentationCommon.h b/GPU/Common/PresentationCommon.h
-index 866ca2a..511c0fb 100644
+index 866ca2a..47109e3 100644
 --- a/GPU/Common/PresentationCommon.h
 +++ b/GPU/Common/PresentationCommon.h
 @@ -17,6 +17,8 @@
@@ -1318,7 +1600,7 @@ index 866ca2a..511c0fb 100644
  #include "Common/Common.h"
  #include "Common/GPU/Shader.h"
  
-@@ -171,6 +173,27 @@ class PresentationCommon {
+@@ -171,6 +173,30 @@ class PresentationCommon {
  	std::vector<Draw::Framebuffer *> previousFramebuffers_;
  	
  	Draw::Pipeline *stereoPipeline_ = nullptr;
@@ -1328,20 +1610,23 @@ index 866ca2a..511c0fb 100644
 +	// between each two, shown in the refresh it would repeat a frame in.
 +	void M33FrameGen(float u0, float v0, float u1, float v1);
 +	void M33FrameGenRelease();
-+	bool M33FrameGenPass(Draw::Pipeline *pipeline, Draw::Framebuffer *target, Draw::Framebuffer *t0, Draw::Framebuffer *t1, Draw::Framebuffer *t2, const float setting[4], float texelW, float texelH);
-+	Draw::Pipeline *fgMotion_ = nullptr, *fgInterp_ = nullptr;
++	void M33FrameGenPass(Draw::Pipeline *pipeline, Draw::Framebuffer *target, Draw::Framebuffer *t0, Draw::Framebuffer *t1, Draw::Framebuffer *t2, const float setting[4], const float extra[4]);
++	static constexpr int kFgLevels = 4;
++	Draw::Pipeline *fgDown_ = nullptr, *fgCoarse_ = nullptr, *fgRefine_ = nullptr, *fgFinal_ = nullptr;
 +	Draw::Buffer *fgVerts_ = nullptr;
-+	// at the shown picture's size (fixed while it is): the frames, the made one; small for the motion
-+	Draw::Framebuffer *fgFrame_[2] = {}, *fgMade_ = nullptr, *fgSmall_[2] = {}, *fgMotionFb_ = nullptr;
++	// at the shown picture's size (fixed while it is): the two frames, the made one; each frame small
++	// (the PSP's size, a half, a quarter, an eighth) and the motion at each of those sizes
++	Draw::Framebuffer *fgFrame_[2] = {}, *fgMade_ = nullptr, *fgPyr_[2][kFgLevels] = {}, *fgField_[kFgLevels] = {};
++	int fgLW_[kFgLevels] = {}, fgLH_[kFgLevels] = {};
 +	// the made frame back in a buffer laid out as the game's (its shown part where the game's is), one
 +	// per buffer size: games swap between buffers of different sizes (GTA: 1924x1088 and 2048x1280)
 +	Draw::Framebuffer *fgOutFb_[2] = {};
 +	int fgOutW_[2] = {}, fgOutH_[2] = {}, fgOutNext_ = 0;
-+	int fgW_ = 0, fgH_ = 0, fgSW_ = 0, fgSH_ = 0, fgCur_ = 0;
++	int fgW_ = 0, fgH_ = 0, fgCur_ = 0;
 +	int fgFlips_ = -1, fgSinceFlip_ = 0, fgInterval_ = 0;
 +	bool fgHavePrev_ = false, fgFailed_ = false;
 +	int fgMadeCount_ = 0;
-+	double fgLogAt_ = 0.0;
++	double fgLogAt_ = 0.0, fgFlipAt_ = 0.0;
 +#endif
  	ShaderInfo *stereoShaderInfo_ = nullptr;
  
