@@ -541,6 +541,116 @@ index 254cb7a..44b3aa1 100644
  #elif USE_SDL3_TTF
  	drawer = new TextDrawerSDL(draw);
  #endif
+diff --git a/Common/Serialize/Serializer.cpp b/Common/Serialize/Serializer.cpp
+index b222d60..b842950 100644
+--- a/Common/Serialize/Serializer.cpp
++++ b/Common/Serialize/Serializer.cpp
+@@ -15,6 +15,7 @@
+ // Official SVN repository and contact information can be found at
+ // http://code.google.com/p/dolphin-emu/
+ 
++#include "ppsspp_config.h"
+ #include <cstdlib>
+ #include <cstring>
+ #include <snappy-c.h>
+@@ -25,6 +26,79 @@
+ #include "Common/File/FileUtil.h"
+ #include "Common/StringUtils.h"
+ 
++#if PPSSPP_PLATFORM(PS4)
++#include <condition_variable>
++#include <mutex>
++#include <thread>
++#include "Common/Thread/ThreadUtil.h"
++
++// M33: a save state's big pieces (the emulated memory, 32 MiB and more) copied by the calling thread
++// and three helpers that do nothing else, a quarter each. A rewind snapshot, several a second, was
++// one ~13 ms memcpy on the emulation thread: a refresh missed each time (ps4/PS4Rewind.cpp).
++namespace {
++
++constexpr int kCopyHelpers = 3;
++constexpr size_t kCopySplitAt = 4 * 1024 * 1024;
++
++struct CopyPart {
++	char *dst;
++	const char *src;
++	size_t n;
++};
++
++std::mutex g_copyCall, g_copyMutex;
++std::condition_variable g_copyWake, g_copyDone;
++CopyPart g_copyParts[kCopyHelpers];
++int g_copyRound = 0, g_copyPending = 0;
++std::once_flag g_copyStart;
++
++void CopyHelper(int i) {
++	SetCurrentThreadName("M33Copy");
++	int seen = 0;
++	for (;;) {
++		CopyPart part;
++		{
++			std::unique_lock<std::mutex> lock(g_copyMutex);
++			g_copyWake.wait(lock, [&] { return g_copyRound != seen; });
++			seen = g_copyRound;
++			part = g_copyParts[i];
++		}
++		memcpy(part.dst, part.src, part.n);
++		std::lock_guard<std::mutex> lock(g_copyMutex);
++		if (--g_copyPending == 0)
++			g_copyDone.notify_one();
++	}
++}
++
++void BigCopy(void *dst, const void *src, size_t n) {
++	if (n < kCopySplitAt) {
++		memcpy(dst, src, n);
++		return;
++	}
++	std::call_once(g_copyStart, [] {
++		for (int i = 0; i < kCopyHelpers; i++)
++			std::thread(CopyHelper, i).detach();
++	});
++	std::lock_guard<std::mutex> call(g_copyCall);
++	const size_t part = (n / (kCopyHelpers + 1)) & ~(size_t)4095;
++	{
++		std::lock_guard<std::mutex> lock(g_copyMutex);
++		for (int i = 0; i < kCopyHelpers; i++) {
++			const size_t at = part * (i + 1);
++			g_copyParts[i] = { (char *)dst + at, (const char *)src + at, i == kCopyHelpers - 1 ? n - at : part };
++		}
++		g_copyPending = kCopyHelpers;
++		g_copyRound++;
++	}
++	g_copyWake.notify_all();
++	memcpy(dst, src, part);
++	std::unique_lock<std::mutex> lock(g_copyMutex);
++	g_copyDone.wait(lock, [] { return g_copyPending == 0; });
++}
++
++}  // namespace
++#endif
++
+ enum class SerializeCompressType {
+ 	NONE = 0,
+ 	SNAPPY = 1,
+@@ -165,9 +239,17 @@ void PointerWrap::DoVoid(void *data, int size) {
+ 	case MODE_READ:
+ 		if (!CheckRead(size))
+ 			return;
++#if PPSSPP_PLATFORM(PS4)
++		BigCopy(data, *ptr, size);
++#else
+ 		memcpy(data, *ptr, size);
++#endif
+ 		break;
++#if PPSSPP_PLATFORM(PS4)
++	case MODE_WRITE: BigCopy(*ptr, data, size); break;
++#else
+ 	case MODE_WRITE: memcpy(*ptr, data, size); break;
++#endif
+ 	case MODE_MEASURE: break;  // MODE_MEASURE - don't need to do anything
+ 	case MODE_VERIFY:
+ 		if (!CheckRead(size))
 diff --git a/Common/Thread/ThreadUtil.cpp b/Common/Thread/ThreadUtil.cpp
 index e842a03..2f182b8 100644
 --- a/Common/Thread/ThreadUtil.cpp
@@ -999,7 +1109,7 @@ index fbc9a46..87bc905 100644
  	virtual bool GetStencilbuffer(u32 fb_address, int fb_stride, GPUDebugBuffer &buffer);
  	virtual bool GetOutputFramebuffer(GPUDebugBuffer &buffer);
 diff --git a/GPU/Common/PresentationCommon.cpp b/GPU/Common/PresentationCommon.cpp
-index d541b43..189ff19 100644
+index d541b43..95ff9c3 100644
 --- a/GPU/Common/PresentationCommon.cpp
 +++ b/GPU/Common/PresentationCommon.cpp
 @@ -29,6 +29,7 @@
@@ -1010,15 +1120,25 @@ index d541b43..189ff19 100644
  #include "Core/Config.h"
  #include "Core/ConfigValues.h"
  #include "Core/System.h"
-@@ -36,6 +37,7 @@
+@@ -36,7 +37,17 @@
  #include "GPU/Common/PostShader.h"
  #include "GPU/Common/PresentationCommon.h"
  #include "GPU/GPUState.h"
 +#include "GPU/GPU.h"
  #include "Common/GPU/ShaderTranslation.h"
++#if PPSSPP_PLATFORM(PS4)
++#include <atomic>
++#include <thread>
++#include <vector>
++#include "Common/File/FileUtil.h"
++#include "Common/File/Path.h"
++#include "Common/Thread/ThreadUtil.h"
++#include "ext/jpge/jpge.h"
++#endif
  
  struct Vertex {
-@@ -565,6 +567,14 @@ static void DoReleaseVector(std::vector<T *> &list) {
+ 	float x, y, z;
+@@ -565,6 +576,14 @@ static void DoReleaseVector(std::vector<T *> &list) {
  }
  
  void PresentationCommon::DestroyDeviceObjects() {
@@ -1033,7 +1153,7 @@ index d541b43..189ff19 100644
  	DoRelease(texColor_);
  	DoRelease(texColorRBSwizzle_);
  	DoRelease(samplerNearest_);
-@@ -668,6 +678,9 @@ void PresentationCommon::UpdateUniforms(bool hasVideo) {
+@@ -668,6 +687,9 @@ void PresentationCommon::UpdateUniforms(bool hasVideo) {
  }
  
  void PresentationCommon::RunPostshaderPasses(const DisplayLayoutConfig &config, OutputFlags flags, int uvRotation, float u0, float v0, float u1, float v1) {
@@ -1043,7 +1163,7 @@ index d541b43..189ff19 100644
  	draw_->Invalidate(InvalidationFlags::CACHED_RENDER_STATE);
  
  	postShaderOutput_ = nullptr;
-@@ -1017,7 +1030,13 @@ void PresentationCommon::CalculateRenderResolution(const DisplayLayoutConfig &co
+@@ -1017,7 +1039,13 @@ void PresentationCommon::CalculateRenderResolution(const DisplayLayoutConfig &co
  		if (firstSSAAFilterLevel >= 2)
  			zoom *= firstSSAAFilterLevel;
  	}
@@ -1057,7 +1177,7 @@ index d541b43..189ff19 100644
  		zoom = 1;
  
  	if (upscaling) {
-@@ -1045,3 +1064,529 @@ void PresentationCommon::CalculateRenderResolution(const DisplayLayoutConfig &co
+@@ -1045,3 +1073,633 @@ void PresentationCommon::CalculateRenderResolution(const DisplayLayoutConfig &co
  
  	*scaleFactor = zoom;
  }
@@ -1067,10 +1187,10 @@ index d541b43..189ff19 100644
 +// M33: frame generation. A game drawing 30 frames a second on a 60 Hz screen shows each frame
 +// twice; with this on, the first of the two refreshes shows a frame made halfway between the
 +// previous frame and the new one, the second the new one: 60 different pictures a second, the
-+// real ones a refresh (~16 ms) later. Only for games at 30 (a frame every 2 refreshes); 60 fps
-+// games, and everything else, are left alone. Off by default (Settings > Graphics, or the quick
-+// menu). While it's on the emulator presents every refresh (Core/HLE/sceDisplay.cpp), as with
-+// "Render duplicate frames".
++// real ones a refresh (~16 ms) later. For games at 30 (a frame every 2 refreshes, or 3 when one
++// runs late); 60 fps games, and everything else, are left alone. Off by default (Settings >
++// Graphics, or the quick menu). While it's on the emulator presents every refresh
++// (Core/HLE/sceDisplay.cpp), as with "Render duplicate frames".
 +//
 +// After AMD's frame interpolation without the game's own motion vectors (AFMF's way: the PSP's
 +// renderer has none): the motion is found by comparing the two frames, coarse to fine.
@@ -1084,6 +1204,8 @@ index d541b43..189ff19 100644
 +// 4. The frame, at the game's rendering size: each pixel from the old frame half its motion back
 +//    and the new one half on, averaged. The motion blended from the four around, its own, its
 +//    neighbours' or none (the HUD), whichever fits; where none does, a cross-fade.
++// At a cut (48 spots across the frames, with their motion, mostly not matching), the made frame is
++// the old one as it is: no cross-fade of two scenes flashing between them.
 +// Motions are kept in RGBA8, 16 bits a coordinate. All are post-processing shaders, compiled like
 +// PPSSPP's own; the result goes on through the post-processing (FSR's sharpening...) in place of the
 +// game's frame. Tuned against the true halfway frames of GTA and God of War pictures moved (driving,
@@ -1248,12 +1370,35 @@ index d541b43..189ff19 100644
 +vec2 Field(ivec2 p, ivec2 size) {
 +  return Unpack(texelFetch(sampler2, clamp(p, ivec2(0), size - 1), 0));
 +}
++// Whether the frames are two different scenes (a cut): at 48 spots across them, with the motion
++// there, more than half don't match (moving pictures: none of them; cuts: ~2/3 and more)
++bool Cut(vec2 px, ivec2 fs) {
++  int bad = 0;
++  for (int k = 0; k < 48; k++) {
++    vec2 uv = (vec2(float(k - (k / 8) * 8), float(k / 8)) + 0.5) / vec2(8.0, 6.0);
++    vec2 d = Field(ivec2(uv * vec2(fs)), fs) * px;
++    float s = 0.0;
++    for (int t = 0; t < 9; t++) {
++      vec2 o = vec2(float(t - (t / 3) * 3 - 1), float(t / 3 - 1)) * 2.0 * px;
++      vec3 e = abs(texture2D(sampler0, uv + o - 0.5 * d).rgb - texture2D(sampler1, uv + o + 0.5 * d).rgb);
++      s += e.r + e.g + e.b;
++    }
++    if (s > 27.0 * 0.04)
++      bad++;
++  }
++  return bad > 24;
++}
 +// One level finer than the motion in sampler2: the best of its motions around (and none), then
 +// nudged. u_setting.x: PSP pixels per pixel here; y: the patch spacing (pixels here); z, w,
-+// u_time.x: the nudges (pixels here, 0: no more)
++// u_time.x: the nudges (pixels here, 0: no more). u_time.w 1 (the PSP's size): the corner pixel
++// says whether the frames are a cut instead (its motion -128, -128)
 +void main() {
 +  vec2 px = 1.0 / vec2(textureSize(sampler0, 0));
 +  ivec2 fs = textureSize(sampler2, 0);
++  if (u_time.w > 0.5 && gl_FragCoord.x < 1.0 && gl_FragCoord.y < 1.0 && Cut(px, fs)) {
++    gl_FragColor = vec4(0.0);
++    return;
++  }
 +  float scale = u_setting.x;
 +  vec2 sp = px * u_setting.y;
 +  vec2 toUv = px / scale;
@@ -1317,28 +1462,36 @@ index d541b43..189ff19 100644
 +  vec4 b = floor(t * 255.0 + 0.5);
 +  return vec2(b.x * 256.0 + b.y, b.z * 256.0 + b.w) / 256.0 - 128.0;
 +}
++vec2 Field(ivec2 p, ivec2 size) {
++  return Unpack(texelFetch(sampler2, clamp(p, ivec2(0), size - 1), 0));
++}
 +// The frame halfway: each pixel from the old frame half its motion back and the new one half on.
-+// Its own motion, its neighbours (an edge between two) or none (the HUD), whichever fits best;
-+// where nothing does, a cross-fade. u_setting.x: the neighbours handicap, y, z: the cross-fade range
++// The motion blended from the four around, this pixel's own, its neighbours' (an edge between two)
++// or none (the HUD), whichever fits best; where none does, a cross-fade. At a cut (the motion's
++// corner says so), the old frame as it is. u_setting.x: the handicap of all but the blended motion;
++// y, z: the cross-fade's range
 +void main() {
++  vec3 here0 = texture2D(sampler0, v_texcoord0).rgb;
 +  ivec2 fs = textureSize(sampler2, 0);
++  if (Field(ivec2(0), fs) == vec2(-128.0)) {
++    gl_FragColor = vec4(here0, 1.0);
++    return;
++  }
++  vec3 here1 = texture2D(sampler1, v_texcoord0).rgb;
 +  vec2 fsz = vec2(fs);
 +  ivec2 c = ivec2(floor(v_texcoord0 * fsz));
 +  vec2 fp = v_texcoord0 * fsz - 0.5;
 +  ivec2 f0 = ivec2(floor(fp));
 +  vec2 fr = fp - floor(fp);
-+  vec2 smooth0 = mix(mix(Unpack(texelFetch(sampler2, clamp(f0, ivec2(0), fs - 1), 0)), Unpack(texelFetch(sampler2, clamp(f0 + ivec2(1, 0), ivec2(0), fs - 1), 0)), fr.x),
-+    mix(Unpack(texelFetch(sampler2, clamp(f0 + ivec2(0, 1), ivec2(0), fs - 1), 0)), Unpack(texelFetch(sampler2, clamp(f0 + ivec2(1, 1), ivec2(0), fs - 1), 0)), fr.x), fr.y);
 +  vec2 cand[7];
-+  cand[6] = Unpack(texelFetch(sampler2, clamp(c, ivec2(0), fs - 1), 0));
-+  cand[0] = smooth0;
-+  cand[1] = Unpack(texelFetch(sampler2, clamp(c + ivec2(-1, 0), ivec2(0), fs - 1), 0));
-+  cand[2] = Unpack(texelFetch(sampler2, clamp(c + ivec2(1, 0), ivec2(0), fs - 1), 0));
-+  cand[3] = Unpack(texelFetch(sampler2, clamp(c + ivec2(0, -1), ivec2(0), fs - 1), 0));
-+  cand[4] = Unpack(texelFetch(sampler2, clamp(c + ivec2(0, 1), ivec2(0), fs - 1), 0));
++  cand[0] = mix(mix(Field(f0, fs), Field(f0 + ivec2(1, 0), fs), fr.x),
++    mix(Field(f0 + ivec2(0, 1), fs), Field(f0 + ivec2(1, 1), fs), fr.x), fr.y);
++  cand[1] = Field(c + ivec2(-1, 0), fs);
++  cand[2] = Field(c + ivec2(1, 0), fs);
++  cand[3] = Field(c + ivec2(0, -1), fs);
++  cand[4] = Field(c + ivec2(0, 1), fs);
 +  cand[5] = vec2(0.0);
-+  vec3 here0 = texture2D(sampler0, v_texcoord0).rgb;
-+  vec3 here1 = texture2D(sampler1, v_texcoord0).rgb;
++  cand[6] = Field(c, fs);
 +  vec3 bestA = vec3(0.0), bestB = vec3(0.0);
 +  float bestE = 1.0e9, bestFit = 1.0e9;
 +  for (int k = 0; k < 7; k++) {
@@ -1362,7 +1515,8 @@ index d541b43..189ff19 100644
 +)";
 +
 +void PresentationCommon::M33FrameGenRelease() {
-+	for (Draw::Framebuffer **fb : { &fgFrame_[0], &fgFrame_[1], &fgMade_, &fgOutFb_[0], &fgOutFb_[1] }) {
++	fgDumpWait_ = 0;
++	for (Draw::Framebuffer **fb : { &fgFrame_[0], &fgFrame_[1], &fgMade_, &fgOutFb_[0], &fgOutFb_[1], &fgDumpFb_[0], &fgDumpFb_[1] }) {
 +		if (*fb) {
 +			(*fb)->Release();
 +			*fb = nullptr;
@@ -1412,13 +1566,76 @@ index d541b43..189ff19 100644
 +	draw_->Draw(4, 0);
 +}
 +
++// (For tuning away from the PS4: with a folder /data/March33/fgdump, the two frames a frame is made
++// from go there as JPEGs, a pair every 2 s, 60 at most. Copied on the GPU, read back a few frames
++// later without waiting for it (as the rewind's pictures), written by a thread of its own.)
++void PresentationCommon::M33FrameGenDump(Draw::Framebuffer *prev, Draw::Framebuffer *cur, int w, int h, double now) {
++	if (fgDumpWait_ > 0 || fgDumped_ >= 60 || now - fgDumpAt_ < 2.0)
++		return;
++	fgDumpAt_ = now;
++	if (!File::Exists(Path("/data/March33/fgdump")))
++		return;
++	for (int i = 0; i < 2; i++) {
++		if (!fgDumpFb_[i])
++			fgDumpFb_[i] = draw_->CreateFramebuffer({ w, h, 1, 1, 0, false, "M33FgDump" });
++		if (!fgDumpFb_[i])
++			return;
++		draw_->BlitFramebuffer(i == 0 ? prev : cur, 0, 0, w, h, fgDumpFb_[i], 0, 0, w, h, Draw::Aspect::COLOR_BIT, Draw::FB_BLIT_NEAREST, "M33FgDump");
++	}
++	fgDumpWait_ = 6;
++}
++
++void PresentationCommon::M33FrameGenDumpCollect() {
++	static std::atomic<bool> busy{ false };
++	static std::vector<uint8_t> reading, writing;
++	if (fgDumpWait_ <= 0 || !fgDumpFb_[0] || !fgDumpFb_[1])
++		return;
++	int w = 0, h = 0;
++	draw_->GetFramebufferDimensions(fgDumpFb_[0], &w, &h);
++	const size_t one = (size_t)w * h * 4;
++	reading.resize(one * 2);
++	const bool ok = draw_->CopyFramebufferToMemory(fgDumpFb_[0], Draw::Aspect::COLOR_BIT, 0, 0, w, h, Draw::DataFormat::R8G8B8A8_UNORM, reading.data(), w, Draw::ReadbackMode::OLD_DATA_OK, "M33FgDump") &&
++		draw_->CopyFramebufferToMemory(fgDumpFb_[1], Draw::Aspect::COLOR_BIT, 0, 0, w, h, Draw::DataFormat::R8G8B8A8_UNORM, reading.data() + one, w, Draw::ReadbackMode::OLD_DATA_OK, "M33FgDump");
++	if (--fgDumpWait_ > 0)
++		return;
++	if (!ok)
++		return;
++	if (busy) {
++		fgDumpWait_ = 1;  // (the pair before is still being written)
++		return;
++	}
++	std::swap(reading, writing);
++	const int n = fgDumped_++;
++	busy = true;
++	std::thread([w, h, n, one] {
++		SetCurrentThreadName("M33FgDump");
++		for (int i = 0; i < 2; i++) {
++			jpge::params params;
++			params.m_quality = 95;
++			const std::string path = StringFromFormat("/data/March33/fgdump/%03d_%d.jpg", n, i);
++			jpge::compress_image_to_jpeg_file(path.c_str(), w, h, 4, writing.data() + one * i, params);
++		}
++		busy = false;
++	}).detach();
++}
++
 +void PresentationCommon::M33FrameGen(float u0, float v0, float u1, float v1) {
 +	if (!g_Config.bM33FrameGen || fgFailed_ || !srcFramebuffer_) {
 +		if (!g_Config.bM33FrameGen && fgW_)
 +			M33FrameGenRelease();
 +		fgFlips_ = -1;
++		fgCallAt_ = 0.0;
 +		return;
 +	}
++	// how evenly the refreshes come (one later than ~16.7 ms shows the picture before twice)
++	const double now = time_now_d();
++	if (fgCallAt_ > 0.0) {
++		const double ms = (now - fgCallAt_) * 1000.0;
++		fgLate_ += ms > 18.0;
++		fgVeryLate_ += ms > 25.0;
++	}
++	fgCallAt_ = now;
++	M33FrameGenDumpCollect();
 +	// a new frame from the game, or the same one again
 +	const int flips = gpuStats.totals.numFlips;
 +	if (flips == fgFlips_) {
@@ -1428,8 +1645,8 @@ index d541b43..189ff19 100644
 +	fgInterval_ = fgFlips_ < 0 ? 0 : fgSinceFlip_ + 1;
 +	fgSinceFlip_ = 0;
 +	fgFlips_ = flips;
++	fgIntervals_[std::min(fgInterval_, 4)]++;
 +	// (after a pause, the quick menu, rewinding: the frame before is from another moment)
-+	const double now = time_now_d();
 +	const bool recent = now - fgFlipAt_ < 0.1;
 +	fgFlipAt_ = now;
 +
@@ -1534,8 +1751,11 @@ index d541b43..189ff19 100644
 +	for (int l = 1; l < kFgLevels; l++)
 +		M33FrameGenPass(fgDown_, fgPyr_[fgCur_][l], fgPyr_[fgCur_][l - 1], nullptr, nullptr, none, none);
 +
-+	const bool make = fgHavePrev_ && recent && fgInterval_ == 2;
++	// a frame 2 refreshes after the one before, as at 30 fps; or 3, when the game ran late: then the
++	// one before has been on for 2 refreshes already, and the made one is the third
++	const bool make = fgHavePrev_ && recent && (fgInterval_ == 2 || fgInterval_ == 3);
 +	if (make) {
++		M33FrameGenDump(prev, cur, w, h, now);
 +		Draw::Framebuffer *const *p0 = fgPyr_[fgCur_ ^ 1], *const *p1 = fgPyr_[fgCur_];
 +		// PSP pixels per pixel at each level
 +		float scale[kFgLevels];
@@ -1543,13 +1763,13 @@ index d541b43..189ff19 100644
 +			scale[l] = (float)fgLW_[0] / (float)fgLW_[l];
 +		// the motion: everything at the coarsest level, then finer: u_setting = scale, the patch's
 +		// spacing, two nudges; u_time = a third nudge, how much the frames count against each other a
-+		// whole motion away, 5 taps instead of 9
++		// whole motion away, 5 taps instead of 9, whether to tell a cut (at the PSP's size)
 +		const int top = kFgLevels - 1;
 +		const float coarse[4] = { scale[top], 0.0f, 0.0f, 0.0f }, coarseX[4] = { 0.0f, 0.5f, 0.0f, 0.0f };
 +		M33FrameGenPass(fgCoarse_, fgField_[top], p0[top], p1[top], nullptr, coarse, coarseX);
 +		for (int l = top - 1; l >= 0; l--) {
 +			const float set[4] = { scale[l], l == 0 ? 2.0f : 1.0f, 1.0f, 0.5f };
-+			const float setX[4] = { l == 0 ? 0.25f : 0.0f, 0.5f, l == 0 ? 1.0f : 0.0f, 0.0f };
++			const float setX[4] = { l == 0 ? 0.25f : 0.0f, 0.5f, l == 0 ? 1.0f : 0.0f, l == 0 ? 1.0f : 0.0f };
 +			M33FrameGenPass(fgRefine_, fgField_[l], p0[l], p1[l], fgField_[l + 1], set, setX);
 +		}
 +		// the frame: the neighbours' handicap, the cross-fade's range
@@ -1581,14 +1801,18 @@ index d541b43..189ff19 100644
 +	fgHavePrev_ = true;
 +	if (now - fgLogAt_ > 30.0) {
 +		if (fgLogAt_ > 0.0)
-+			NOTICE_LOG(Log::G3D, "M33 frame generation: %d frames made in %.0f s (the game a frame every %d refreshes)", fgMadeCount_, now - fgLogAt_, fgInterval_);
++			NOTICE_LOG(Log::G3D, "M33 frame generation: %d frames made in %.0f s; the game's frames 1/2/3/4+ refreshes apart: %d/%d/%d/%d; refreshes late (over 18/25 ms): %d/%d",
++				fgMadeCount_, now - fgLogAt_, fgIntervals_[1], fgIntervals_[2], fgIntervals_[3], fgIntervals_[4], fgLate_, fgVeryLate_);
 +		fgLogAt_ = now;
 +		fgMadeCount_ = 0;
++		fgLate_ = fgVeryLate_ = 0;
++		for (int &n : fgIntervals_)
++			n = 0;
 +	}
 +}
 +#endif  // PPSSPP_PLATFORM(PS4)
 diff --git a/GPU/Common/PresentationCommon.h b/GPU/Common/PresentationCommon.h
-index 866ca2a..47109e3 100644
+index 866ca2a..b06b6c0 100644
 --- a/GPU/Common/PresentationCommon.h
 +++ b/GPU/Common/PresentationCommon.h
 @@ -17,6 +17,8 @@
@@ -1600,7 +1824,7 @@ index 866ca2a..47109e3 100644
  #include "Common/Common.h"
  #include "Common/GPU/Shader.h"
  
-@@ -171,6 +173,30 @@ class PresentationCommon {
+@@ -171,6 +173,39 @@ class PresentationCommon {
  	std::vector<Draw::Framebuffer *> previousFramebuffers_;
  	
  	Draw::Pipeline *stereoPipeline_ = nullptr;
@@ -1627,6 +1851,15 @@ index 866ca2a..47109e3 100644
 +	bool fgHavePrev_ = false, fgFailed_ = false;
 +	int fgMadeCount_ = 0;
 +	double fgLogAt_ = 0.0, fgFlipAt_ = 0.0;
++	// how it goes, logged every 30 s: the game's frames 0/1/2/3/4+ refreshes apart, refreshes late
++	int fgIntervals_[5] = {}, fgLate_ = 0, fgVeryLate_ = 0;
++	double fgCallAt_ = 0.0;
++	// (frames for tuning, with a folder /data/March33/fgdump)
++	void M33FrameGenDump(Draw::Framebuffer *prev, Draw::Framebuffer *cur, int w, int h, double now);
++	void M33FrameGenDumpCollect();
++	Draw::Framebuffer *fgDumpFb_[2] = {};
++	int fgDumped_ = 0, fgDumpWait_ = 0;
++	double fgDumpAt_ = 0.0;
 +#endif
  	ShaderInfo *stereoShaderInfo_ = nullptr;
  
@@ -5434,10 +5667,10 @@ index 0000000..5a23a2c
 +UIScreen *M33_CreatePauseMenu(const Path &gamePath, bool bootPending);
 diff --git a/ps4/PS4Rewind.cpp b/ps4/PS4Rewind.cpp
 new file mode 100644
-index 0000000..4150343
+index 0000000..649452a
 --- /dev/null
 +++ b/ps4/PS4Rewind.cpp
-@@ -0,0 +1,652 @@
+@@ -0,0 +1,656 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -5456,7 +5689,7 @@ index 0000000..4150343
 +// from there.
 +//
 +// While playing, two things are recorded:
-+// - snapshots of the emulator, every kSnapInterval frames. As in RetroArch's state manager, only
++// - snapshots of the emulator, every kSnapSeconds. As in RetroArch's state manager, only
 +//   the newest is kept whole; each older one as its difference to the one after it (the 2 KB blocks
 +//   that changed, zstd-compressed).
 +// - the picture on the screen, every kPicInterval frames (at the PSP's 480x272, RGB565, zstd),
@@ -5518,8 +5751,10 @@ index 0000000..4150343
 +
 +namespace {
 +
-+constexpr int kSnapInterval = 10;  // frames between snapshots (6 a second; the pictures are 30)
-+constexpr int kSnapMaxFrames = 30;  // ...put off to a frame with room, at most this long
++// between snapshots (4 a second). By time: with "Render duplicate frames" or frame generation the
++// emulator presents every refresh, 60 frames a second, without them a 30 fps game's 30.
++constexpr double kSnapSeconds = 0.25;
++double g_lastSnapAt = 0.0;
 +double g_lastFrameAt = 0.0;
 +int g_slowFrames = 0, g_slowAfterSnapshot = 0;
 +bool g_lastWasSnapshot = false;
@@ -5587,7 +5822,7 @@ index 0000000..4150343
 +ZSTD_CCtx *g_pcctx = nullptr;  // the pictures'
 +ZSTD_DCtx *g_dctx = nullptr;
 +
-+int g_snapFrames = 0, g_picFrames = 0;
++int g_picFrames = 0;
 +bool g_rewinding = false;
 +std::atomic<bool> g_active{ false };
 +double g_heldSince = 0.0, g_lastStep = 0.0, g_owed = 0.0;
@@ -5992,10 +6227,11 @@ index 0000000..4150343
 +		g_rewinding = false;
 +		g_active = false;
 +		Resume();
-+		g_snapFrames = g_picFrames = 0;
++		g_lastSnapAt = now;
++		g_picFrames = 0;
 +	}
-+	// A snapshot takes ~14 ms of the emulation thread: in a frame with room to spare, so a heavy
-+	// scene doesn't stutter on it; at the latest every kSnapMaxFrames. Slow frames are counted.
++	// A snapshot every kSnapSeconds (its 36 MiB copy is split over four threads, Serializer.cpp).
++	// Slow frames are counted.
 +	const double frameMs = g_lastFrameAt > 0.0 ? (now - g_lastFrameAt) * 1000.0 : 0.0;
 +	g_lastFrameAt = now;
 +	if (frameMs > 25.0) {
@@ -6004,8 +6240,8 @@ index 0000000..4150343
 +			g_slowAfterSnapshot++;
 +	}
 +	g_lastWasSnapshot = false;
-+	if (++g_snapFrames >= kSnapInterval && (frameMs < 15.0 || g_snapFrames >= kSnapMaxFrames)) {
-+		g_snapFrames = 0;
++	if (now - g_lastSnapAt >= kSnapSeconds) {
++		g_lastSnapAt = now;
 +		Snapshot();
 +		g_lastWasSnapshot = true;
 +	}
@@ -6079,7 +6315,8 @@ index 0000000..4150343
 +	g_rewinding = false;
 +	g_active = false;
 +	g_shown = -1;
-+	g_snapFrames = g_picFrames = 0;
++	g_lastSnapAt = 0.0;
++	g_picFrames = 0;
 +	if (g_tex) {
 +		g_tex->Release();
 +		g_tex = nullptr;
@@ -7048,7 +7285,7 @@ index 0000000..970fbb6
 +}
 diff --git a/ps4/PS4VulkanWSI.cpp b/ps4/PS4VulkanWSI.cpp
 new file mode 100644
-index 0000000..606695d
+index 0000000..16b07e9
 --- /dev/null
 +++ b/ps4/PS4VulkanWSI.cpp
 @@ -0,0 +1,649 @@
@@ -7492,7 +7729,7 @@ index 0000000..606695d
 +	return n < sc->imageCount ? VK_INCOMPLETE : VK_SUCCESS;
 +}
 +
-+// present statistics, logged every 10 s
++// present statistics, logged every 30 s
 +struct
 +{
 +	std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -7537,9 +7774,9 @@ index 0000000..606695d
 +	sStats.flips++;
 +	const auto now = std::chrono::steady_clock::now();
 +	const double secs = std::chrono::duration<double>(now - sStats.start).count();
-+	if (secs < 10.0)
++	if (secs < 30.0)
 +		return;
-+	INFO_LOG(Log::G3D, "PS4WSI: %.1f flips/s, acquire waits %.0f ms/s, %u timeouts, flipArg %lld of %llu submitted",
++	NOTICE_LOG(Log::G3D, "PS4WSI: %.1f flips/s, acquire waits %.0f ms/s, %u timeouts, flipArg %lld of %llu submitted",
 +			sStats.flips / secs, sStats.waitNs / 1e6 / secs, sStats.timeouts, (long long)sStats.lastFlipArg,
 +			(unsigned long long)sFlipsSubmitted);
 +	sStats.start = now;
