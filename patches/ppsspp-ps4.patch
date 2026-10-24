@@ -209,10 +209,15 @@ index 86ec0b6..4ea4f80 100644
  	g_vulkanMayBeAvailable = true;
  	return true;
 diff --git a/Common/GPU/Vulkan/VulkanRenderManager.cpp b/Common/GPU/Vulkan/VulkanRenderManager.cpp
-index ee38e23..f38667e 100644
+index ee38e23..2552f42 100644
 --- a/Common/GPU/Vulkan/VulkanRenderManager.cpp
 +++ b/Common/GPU/Vulkan/VulkanRenderManager.cpp
-@@ -647,8 +647,15 @@ void VulkanRenderManager::CompileThreadFunc() {
+@@ -1,3 +1,4 @@
++#include <atomic>
+ #include <cstdint>
+ 
+ #include <map>
+@@ -647,8 +648,15 @@ void VulkanRenderManager::CompileThreadFunc() {
  	_assert_(compileQueue_.empty());
  }
  
@@ -228,6 +233,68 @@ index ee38e23..f38667e 100644
  	while (true) {
  		_dbg_assert_(useRenderThread_);
  
+@@ -734,6 +742,13 @@ void VulkanRenderManager::PollPresentTiming() {
+ 	}
+ }
+ 
++#if PPSSPP_PLATFORM(PS4)
++// M33: where a frame's start waits, for the performance log (ps4/PS4Perf.cpp): for the render
++// thread to have submitted this frame slot's last frame, then for the GPU to have run it; and the
++// render thread's own time in its tasks
++std::atomic<long long> g_m33WaitSubmitUs{ 0 }, g_m33WaitGpuUs{ 0 }, g_m33RenderTaskUs{ 0 }, g_m33RenderTasks{ 0 };
++#endif
++
+ void VulkanRenderManager::BeginFrame(bool enableProfiling, bool enableLogProfiler) {
+ 	double frameBeginTime = time_now_d();
+ 	VLOG("BeginFrame");
+@@ -745,6 +760,9 @@ void VulkanRenderManager::BeginFrame(bool enableProfiling, bool enableLogProfile
+ 
+ 	// Makes sure the submission from the previous time around has happened. Otherwise
+ 	// we are not allowed to wait from another thread here..
++#if PPSSPP_PLATFORM(PS4)
++	const double waitStart = time_now_d();
++#endif
+ 	if (useRenderThread_) {
+ 		std::unique_lock<std::mutex> lock(frameData.fenceMutex);
+ 		while (!frameData.readyForFence) {
+@@ -752,6 +770,10 @@ void VulkanRenderManager::BeginFrame(bool enableProfiling, bool enableLogProfile
+ 		}
+ 		frameData.readyForFence = false;
+ 	}
++#if PPSSPP_PLATFORM(PS4)
++	const double submitted = time_now_d();
++	g_m33WaitSubmitUs += (long long)((submitted - waitStart) * 1e6);
++#endif
+ 	auto restoreReadyForFence = [&]() {
+ 		if (useRenderThread_) {
+ 			std::lock_guard<std::mutex> lock(frameData.fenceMutex);
+@@ -765,6 +787,9 @@ void VulkanRenderManager::BeginFrame(bool enableProfiling, bool enableLogProfile
+ 	if (vkWaitForFences(device, 1, &frameData.fence, true, UINT64_MAX) == VK_ERROR_DEVICE_LOST) {
+ 		_assert_msg_(false, "Device lost in vkWaitForFences");
+ 	}
++#if PPSSPP_PLATFORM(PS4)
++	g_m33WaitGpuUs += (long long)((time_now_d() - submitted) * 1e6);
++#endif
+ 
+ 	if (!RecreatePresentationIfNeeded()) {
+ 		restoreReadyForFence();
+@@ -1686,6 +1711,16 @@ void VulkanRenderManager::Present() {
+ //
+ // Can be called again after a VKRRunType::SYNC on the same frame.
+ void VulkanRenderManager::Run(VKRRenderThreadTask &task) {
++#if PPSSPP_PLATFORM(PS4)
++	const double taskStart = time_now_d();
++	struct TaskTime {
++		double start;
++		~TaskTime() {
++			g_m33RenderTaskUs += (long long)((time_now_d() - start) * 1e6);
++			g_m33RenderTasks++;
++		}
++	} taskTime{ taskStart };
++#endif
+ 	FrameData &frameData = frameData_[task.frame];
+ 
+ 	if (task.runType == VKRRunType::PRESENT) {
 diff --git a/Common/MemArenaPS4.cpp b/Common/MemArenaPS4.cpp
 new file mode 100644
 index 0000000..0dbf50b
@@ -5185,10 +5252,10 @@ index 0000000..2f80279
 +}  // namespace PS4Pad
 diff --git a/ps4/PS4Perf.cpp b/ps4/PS4Perf.cpp
 new file mode 100644
-index 0000000..3deb4bc
+index 0000000..5416f14
 --- /dev/null
 +++ b/ps4/PS4Perf.cpp
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,127 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -5223,6 +5290,7 @@ index 0000000..3deb4bc
 +extern std::atomic<long long> g_m33JitInvalidations, g_m33JitInvalidatedBytes, g_m33JitBlocksDropped;  // Core/MIPS/IR/IRJit.cpp
 +extern int g_m33JitBlocks;
 +}
++extern std::atomic<long long> g_m33WaitSubmitUs, g_m33WaitGpuUs, g_m33RenderTaskUs, g_m33RenderTasks;  // Common/GPU/Vulkan/VulkanRenderManager.cpp
 +using MIPSComp::g_m33JitInvalidations;
 +using MIPSComp::g_m33JitInvalidatedBytes;
 +using MIPSComp::g_m33JitBlocksDropped;
@@ -5243,6 +5311,7 @@ index 0000000..3deb4bc
 +Totals g_t;
 +long long g_discReads = 0, g_discBytes = 0, g_discMicros = 0;
 +long long g_jitInv = 0, g_jitInvBytes = 0, g_jitDropped = 0;
++long long g_waitSubmit = 0, g_waitGpu = 0, g_renderUs = 0, g_renderTasks = 0;
 +double g_since = 0.0, g_lastFrame = 0.0;
 +
 +}  // namespace
@@ -5288,13 +5357,18 @@ index 0000000..3deb4bc
 +		"M33 perf: %.0f%% speed, game %.0f fps; %.1f frames/s, emulation %.1f ms a frame (most %.1f), %d late; per frame: "
 +		"%.0f draws, %.0f flushes, %.0f vertices, %.1f textures decoded, %.1f hashed, %.1f uploads, %.2f readbacks (%.2f waiting), "
 +		"%.2f block transfers, %.2f blend copies, %.2f self-texture copies, %.2f color copies, %.2f depth copies, %.2f reinterprets, "
-+		"%.2f depal, %.2f new framebuffers, %.1f clears, %.1f software-transformed draws; disc: %.1f reads, %.0f KB, %.1f ms; code invalidated: %.1f times, %.0f KB, %.1f blocks (%d blocks known)",
++		"%.2f depal, %.2f new framebuffers, %.1f clears, %.1f software-transformed draws; disc: %.1f reads, %.0f KB, %.1f ms; code invalidated: %.1f times, %.0f KB, %.1f blocks (%d blocks known); frame start waits %.1f ms for the render thread, %.1f ms for the GPU; render thread %.1f ms in %.1f tasks",
 +		vps / 59.94f * 100.0f, actual, g_t.frames / secs, g_t.emuMs / n, g_t.emuMaxMs, g_t.late,
 +		g_t.draws / n, g_t.flushes / n, g_t.verts / n, g_t.decoded / n, g_t.hashed / n, g_t.uploads / n, g_t.readbacks / n, g_t.blocking / n,
 +		g_t.blockTransfers / n, g_t.blendCopies / n, g_t.selfTexCopies / n, g_t.colorCopies / n, g_t.depthCopies / n, g_t.reinterpret / n,
 +		g_t.depal / n, g_t.fbosCreated / n, g_t.clears / n, g_t.softTransformed / n,
 +		(g_m33DiscReads - g_discReads) / n, (g_m33DiscBytes - g_discBytes) / 1024.0 / n, (g_m33DiscMicros - g_discMicros) / 1000.0 / n,
-+		(g_m33JitInvalidations - g_jitInv) / n, (g_m33JitInvalidatedBytes - g_jitInvBytes) / 1024.0 / n, (g_m33JitBlocksDropped - g_jitDropped) / n, g_m33JitBlocks);
++		(g_m33JitInvalidations - g_jitInv) / n, (g_m33JitInvalidatedBytes - g_jitInvBytes) / 1024.0 / n, (g_m33JitBlocksDropped - g_jitDropped) / n, g_m33JitBlocks,
++		(g_m33WaitSubmitUs - g_waitSubmit) / 1000.0 / n, (g_m33WaitGpuUs - g_waitGpu) / 1000.0 / n, (g_m33RenderTaskUs - g_renderUs) / 1000.0 / n, (g_m33RenderTasks - g_renderTasks) / n);
++	g_waitSubmit = g_m33WaitSubmitUs;
++	g_waitGpu = g_m33WaitGpuUs;
++	g_renderUs = g_m33RenderTaskUs;
++	g_renderTasks = g_m33RenderTasks;
 +	g_jitInv = g_m33JitInvalidations;
 +	g_jitInvBytes = g_m33JitInvalidatedBytes;
 +	g_jitDropped = g_m33JitBlocksDropped;
