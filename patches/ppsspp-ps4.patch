@@ -1103,6 +1103,40 @@ index 6b13248..47dbc29 100644
  }
  
  // TODO : improve, look in the file more
+diff --git a/Core/MIPS/IR/IRJit.cpp b/Core/MIPS/IR/IRJit.cpp
+index f083621..be79765 100644
+--- a/Core/MIPS/IR/IRJit.cpp
++++ b/Core/MIPS/IR/IRJit.cpp
+@@ -16,6 +16,7 @@
+ // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
+ 
+ #include "ppsspp_config.h"
++#include <atomic>
+ #include <set>
+ #include <algorithm>
+ 
+@@ -162,8 +163,21 @@ void IRJit::WriteProfileReport() {
+ 		blocks_.GetBlock(blockNum)->profileStats_ = JitBlockProfileStats{};
+ }
+ 
++#if PPSSPP_PLATFORM(PS4)
++// M33: code invalidations, for the performance log (ps4/PS4Perf.cpp): how many, their bytes, the
++// blocks they threw away
++std::atomic<long long> g_m33JitInvalidations{ 0 }, g_m33JitInvalidatedBytes{ 0 }, g_m33JitBlocksDropped{ 0 };
++int g_m33JitBlocks = 0;
++#endif
++
+ void IRJit::InvalidateCacheAt(u32 em_address, int length) {
+ 	std::vector<int> numbers = blocks_.FindInvalidatedBlockNumbers(em_address, length);
++#if PPSSPP_PLATFORM(PS4)
++	g_m33JitInvalidations++;
++	g_m33JitInvalidatedBytes += length;
++	g_m33JitBlocksDropped += (long long)numbers.size();
++	g_m33JitBlocks = blocks_.GetNumBlocks();
++#endif
+ 	if (numbers.empty()) {
+ 		return;
+ 	}
 diff --git a/Core/PSPLoaders.cpp b/Core/PSPLoaders.cpp
 index 4b9f88d..f53b3aa 100644
 --- a/Core/PSPLoaders.cpp
@@ -5116,10 +5150,10 @@ index 0000000..2f80279
 +}  // namespace PS4Pad
 diff --git a/ps4/PS4Perf.cpp b/ps4/PS4Perf.cpp
 new file mode 100644
-index 0000000..7d05521
+index 0000000..3deb4bc
 --- /dev/null
 +++ b/ps4/PS4Perf.cpp
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,120 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -5150,6 +5184,14 @@ index 0000000..7d05521
 +#include "ps4/PS4Perf.h"
 +
 +extern std::atomic<long long> g_m33DiscReads, g_m33DiscBytes, g_m33DiscMicros;  // Core/FileLoaders/LocalFileLoader.cpp
++namespace MIPSComp {
++extern std::atomic<long long> g_m33JitInvalidations, g_m33JitInvalidatedBytes, g_m33JitBlocksDropped;  // Core/MIPS/IR/IRJit.cpp
++extern int g_m33JitBlocks;
++}
++using MIPSComp::g_m33JitInvalidations;
++using MIPSComp::g_m33JitInvalidatedBytes;
++using MIPSComp::g_m33JitBlocksDropped;
++using MIPSComp::g_m33JitBlocks;
 +
 +namespace {
 +
@@ -5165,6 +5207,7 @@ index 0000000..7d05521
 +
 +Totals g_t;
 +long long g_discReads = 0, g_discBytes = 0, g_discMicros = 0;
++long long g_jitInv = 0, g_jitInvBytes = 0, g_jitDropped = 0;
 +double g_since = 0.0, g_lastFrame = 0.0;
 +
 +}  // namespace
@@ -5210,12 +5253,16 @@ index 0000000..7d05521
 +		"M33 perf: %.0f%% speed, game %.0f fps; %.1f frames/s, emulation %.1f ms a frame (most %.1f), %d late; per frame: "
 +		"%.0f draws, %.0f flushes, %.0f vertices, %.1f textures decoded, %.1f hashed, %.1f uploads, %.2f readbacks (%.2f waiting), "
 +		"%.2f block transfers, %.2f blend copies, %.2f self-texture copies, %.2f color copies, %.2f depth copies, %.2f reinterprets, "
-+		"%.2f depal, %.2f new framebuffers, %.1f clears, %.1f software-transformed draws; disc: %.1f reads, %.0f KB, %.1f ms",
++		"%.2f depal, %.2f new framebuffers, %.1f clears, %.1f software-transformed draws; disc: %.1f reads, %.0f KB, %.1f ms; code invalidated: %.1f times, %.0f KB, %.1f blocks (%d blocks known)",
 +		vps / 59.94f * 100.0f, actual, g_t.frames / secs, g_t.emuMs / n, g_t.emuMaxMs, g_t.late,
 +		g_t.draws / n, g_t.flushes / n, g_t.verts / n, g_t.decoded / n, g_t.hashed / n, g_t.uploads / n, g_t.readbacks / n, g_t.blocking / n,
 +		g_t.blockTransfers / n, g_t.blendCopies / n, g_t.selfTexCopies / n, g_t.colorCopies / n, g_t.depthCopies / n, g_t.reinterpret / n,
 +		g_t.depal / n, g_t.fbosCreated / n, g_t.clears / n, g_t.softTransformed / n,
-+		(g_m33DiscReads - g_discReads) / n, (g_m33DiscBytes - g_discBytes) / 1024.0 / n, (g_m33DiscMicros - g_discMicros) / 1000.0 / n);
++		(g_m33DiscReads - g_discReads) / n, (g_m33DiscBytes - g_discBytes) / 1024.0 / n, (g_m33DiscMicros - g_discMicros) / 1000.0 / n,
++		(g_m33JitInvalidations - g_jitInv) / n, (g_m33JitInvalidatedBytes - g_jitInvBytes) / 1024.0 / n, (g_m33JitBlocksDropped - g_jitDropped) / n, g_m33JitBlocks);
++	g_jitInv = g_m33JitInvalidations;
++	g_jitInvBytes = g_m33JitInvalidatedBytes;
++	g_jitDropped = g_m33JitBlocksDropped;
 +	g_discReads = g_m33DiscReads;
 +	g_discBytes = g_m33DiscBytes;
 +	g_discMicros = g_m33DiscMicros;

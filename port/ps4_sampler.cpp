@@ -49,32 +49,41 @@ struct ThreadSamples {
     // for a sample in a system module: the eboot code it was called from (0: not found), by the
     // stub's return address or the frame pointers above it - who waits there
     uint64_t callers[kMaxSamples];
+    uint64_t callers2[kMaxSamples];  // ...and the eboot code above that (the caller's caller, or near)
     std::atomic<int> count{0};
 };
 
 // The eboot address a system-module sample came from: the return address at rsp (a syscall stub
 // has no frame), else up the frame-pointer chain, each frame inside the stack (rsp up to 1 MiB).
-uint64_t systemCaller(const uint64_t* regs) {
+uint64_t systemCaller(const uint64_t* regs, uint64_t* above) {
     const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
     auto eboot = [&](uint64_t a) { return a >= text && a < text + kTextWindow; };
+    *above = 0;
     const uint64_t rsp = regs[kRspIndex];
     if (rsp & 7)
         return 0;
+    uint64_t first = 0;
     const uint64_t ret = *reinterpret_cast<const uint64_t*>(rsp);
     if (eboot(ret))
-        return ret;
+        first = ret;
     uint64_t fp = regs[kRbpIndex];
-    for (int k = 0; k < 8; k++) {
+    for (int k = 0; k < 12; k++) {
         if (fp < rsp || fp > rsp + 0x100000 || (fp & 7))
-            return 0;
+            break;
         const uint64_t* frame = reinterpret_cast<const uint64_t*>(fp);
-        if (eboot(frame[1]))
-            return frame[1];
+        if (eboot(frame[1]) && frame[1] != first) {
+            if (!first) {
+                first = frame[1];
+            } else {
+                *above = frame[1];
+                break;
+            }
+        }
         if (frame[0] <= fp)
-            return 0;
+            break;
         fp = frame[0];
     }
-    return 0;
+    return first;
 }
 
 ThreadSamples g_threads[kMaxThreads];
@@ -96,13 +105,14 @@ void profHandler(int, siginfo_t*, void* context) {
             // tables name. (Blaming "the first eboot address on the stack" picked up stale
             // values and named the wrong callers: the caller is found by the stub's return
             // address and the frame pointers instead, systemCaller.)
-            uint64_t caller = 0;
+            uint64_t caller = 0, above = 0;
             if (sample >= kSystemLibs && sample < 2 * kSystemLibs) {
                 sample |= kCallerTag;
-                caller = systemCaller(regs);
+                caller = systemCaller(regs, &above);
             }
             t.samples[n] = sample;
             t.callers[n] = caller;
+            t.callers2[n] = above;
             t.count.store(n + 1, std::memory_order_release);
         }
         return;
@@ -125,19 +135,23 @@ void noteHotJit(uint64_t address, int count);
 // Aggregates one thread's window: sorts the samples in place and prints the top entries.
 void report(int fd, ThreadSamples& t, double window_start) {
     // Copy first: the handler keeps writing into t.samples once count is reset.
-    static uint64_t s[kMaxSamples], c[kMaxSamples];
+    static uint64_t s[kMaxSamples], c[kMaxSamples], c2[kMaxSamples];
     const int n = std::min(t.count.load(std::memory_order_acquire), kMaxSamples);
     memcpy(s, t.samples, sizeof(uint64_t) * n);
     memcpy(c, t.callers, sizeof(uint64_t) * n);
+    memcpy(c2, t.callers2, sizeof(uint64_t) * n);
     t.count.store(0, std::memory_order_release);
     if (n == 0)
         return;
     const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
     // the system-module samples by the eboot code they came from (relative to .text, exact)
     int callerCount = 0;
+    // (each as one key: the caller in the low 32 bits, the one above in the high 32, both .text-relative)
     for (int i = 0; i < n; i++) {
-        if (s[i] & kCallerTag)
-            c[callerCount++] = c[i] ? c[i] - text : 0;
+        if (s[i] & kCallerTag) {
+            const uint64_t lo = c[i] ? c[i] - text : 0, hi = c2[i] ? c2[i] - text : 0;
+            c[callerCount++] = lo | (hi << 32);
+        }
     }
 
     // Eboot and JIT code: bucket by 16 bytes (eboot addresses relative to .text; JIT addresses
@@ -206,8 +220,8 @@ void report(int fd, ThreadSamples& t, double window_start) {
         if (entries[i].key == 0)
             snprintf(line, sizeof(line), "  %5.1f%% system, called from: not found\n", 100.0 * entries[i].count / n);
         else
-            snprintf(line, sizeof(line), "  %5.1f%% system, called from elf 0x%llx\n", 100.0 * entries[i].count / n,
-                     static_cast<unsigned long long>(entries[i].key));
+            snprintf(line, sizeof(line), "  %5.1f%% system, called from elf 0x%llx, above it elf 0x%llx\n", 100.0 * entries[i].count / n,
+                     static_cast<unsigned long long>(entries[i].key & 0xFFFFFFFFULL), static_cast<unsigned long long>(entries[i].key >> 32));
         writeLine(fd, line);
     }
 }
