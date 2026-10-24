@@ -208,6 +208,26 @@ index 86ec0b6..4ea4f80 100644
  	g_vulkanAvailabilityChecked = true;
  	g_vulkanMayBeAvailable = true;
  	return true;
+diff --git a/Common/GPU/Vulkan/VulkanRenderManager.cpp b/Common/GPU/Vulkan/VulkanRenderManager.cpp
+index ee38e23..f38667e 100644
+--- a/Common/GPU/Vulkan/VulkanRenderManager.cpp
++++ b/Common/GPU/Vulkan/VulkanRenderManager.cpp
+@@ -647,8 +647,15 @@ void VulkanRenderManager::CompileThreadFunc() {
+ 	_assert_(compileQueue_.empty());
+ }
+ 
++#if PPSSPP_PLATFORM(PS4)
++extern "C" void ps4_sampler_register_thread(const char *name);  // M33: port/ps4_sampler.cpp
++#endif
++
+ void VulkanRenderManager::RenderThreadFunc() {
+ 	SetCurrentThreadName("VulkanRenderMan");
++#if PPSSPP_PLATFORM(PS4)
++	ps4_sampler_register_thread("VulkanRenderMan");  // (sampled with /data/March33/profile.txt)
++#endif
+ 	while (true) {
+ 		_dbg_assert_(useRenderThread_);
+ 
 diff --git a/Common/MemArenaPS4.cpp b/Common/MemArenaPS4.cpp
 new file mode 100644
 index 0000000..0dbf50b
@@ -1104,7 +1124,7 @@ index 6b13248..47dbc29 100644
  
  // TODO : improve, look in the file more
 diff --git a/Core/MIPS/IR/IRJit.cpp b/Core/MIPS/IR/IRJit.cpp
-index f083621..be79765 100644
+index f083621..3414b45 100644
 --- a/Core/MIPS/IR/IRJit.cpp
 +++ b/Core/MIPS/IR/IRJit.cpp
 @@ -16,6 +16,7 @@
@@ -1115,7 +1135,7 @@ index f083621..be79765 100644
  #include <set>
  #include <algorithm>
  
-@@ -162,8 +163,21 @@ void IRJit::WriteProfileReport() {
+@@ -162,8 +163,35 @@ void IRJit::WriteProfileReport() {
  		blocks_.GetBlock(blockNum)->profileStats_ = JitBlockProfileStats{};
  }
  
@@ -1127,7 +1147,22 @@ index f083621..be79765 100644
 +#endif
 +
  void IRJit::InvalidateCacheAt(u32 em_address, int length) {
- 	std::vector<int> numbers = blocks_.FindInvalidatedBlockNumbers(em_address, length);
+-	std::vector<int> numbers = blocks_.FindInvalidatedBlockNumbers(em_address, length);
++	// M33: "everything" (sceKernelIcacheInvalidateAll / ClearAll ask for 0..0x3FFFFFFF) as PPSSPP's old
++	// x86 JIT did it: only the blocks whose code has changed since they were compiled (their hash).
++	// Evangelion 2 asks six times a frame: throwing away all ~1,000 blocks each time, and looking
++	// through 262,144 pages for them, ran it at 5% speed.
++	std::vector<int> numbers;
++	if ((u32)length >= 0x1FFFFFFF) {
++		const int count = blocks_.GetNumBlocks();
++		for (int i = 0; i < count; i++) {
++			const IRBlock *b = blocks_.GetBlockUnchecked(i);
++			if (b->IsValid() && !b->HashMatches())
++				numbers.push_back(i);
++		}
++	} else {
++		numbers = blocks_.FindInvalidatedBlockNumbers(em_address, length);
++	}
 +#if PPSSPP_PLATFORM(PS4)
 +	g_m33JitInvalidations++;
 +	g_m33JitInvalidatedBytes += length;
