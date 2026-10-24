@@ -34,7 +34,7 @@ namespace {
 constexpr int kSigProf = 27;    // FreeBSD value
 constexpr int kSaSiginfo = 0x40, kSaRestart = 0x0002;
 constexpr int kMcontextOffset = 0x40;  // measured on hardware (see ps4_crashlog.cpp)
-constexpr int kRipIndex = 20, kRspIndex = 23;
+constexpr int kRipIndex = 20, kRspIndex = 23, kRbpIndex = 9;
 // Samples in system libraries (libkernel/libc at 0x800000000+) are attributed to the eboot
 // function that called into them: the first eboot code address on the stack, tagged.
 constexpr uint64_t kSystemLibs = 0x800000000ULL, kCallerTag = 1ULL << 62;
@@ -46,8 +46,36 @@ struct ThreadSamples {
     std::atomic<pthread_t> thread{};
     const char* name = nullptr;
     uint64_t samples[kMaxSamples];
+    // for a sample in a system module: the eboot code it was called from (0: not found), by the
+    // stub's return address or the frame pointers above it - who waits there
+    uint64_t callers[kMaxSamples];
     std::atomic<int> count{0};
 };
+
+// The eboot address a system-module sample came from: the return address at rsp (a syscall stub
+// has no frame), else up the frame-pointer chain, each frame inside the stack (rsp up to 1 MiB).
+uint64_t systemCaller(const uint64_t* regs) {
+    const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
+    auto eboot = [&](uint64_t a) { return a >= text && a < text + kTextWindow; };
+    const uint64_t rsp = regs[kRspIndex];
+    if (rsp & 7)
+        return 0;
+    const uint64_t ret = *reinterpret_cast<const uint64_t*>(rsp);
+    if (eboot(ret))
+        return ret;
+    uint64_t fp = regs[kRbpIndex];
+    for (int k = 0; k < 8; k++) {
+        if (fp < rsp || fp > rsp + 0x100000 || (fp & 7))
+            return 0;
+        const uint64_t* frame = reinterpret_cast<const uint64_t*>(fp);
+        if (eboot(frame[1]))
+            return frame[1];
+        if (frame[0] <= fp)
+            return 0;
+        fp = frame[0];
+    }
+    return 0;
+}
 
 ThreadSamples g_threads[kMaxThreads];
 std::atomic<int> g_thread_count{0};
@@ -66,10 +94,15 @@ void profHandler(int, siginfo_t*, void* context) {
             // Inside a system module: keep the exact address (tagged). The module list at the
             // top of samples.log maps it to a module offset, which the decrypted modules' symbol
             // tables name. (Blaming "the first eboot address on the stack" picked up stale
-            // values and named the wrong callers.)
-            if (sample >= kSystemLibs && sample < 2 * kSystemLibs)
+            // values and named the wrong callers: the caller is found by the stub's return
+            // address and the frame pointers instead, systemCaller.)
+            uint64_t caller = 0;
+            if (sample >= kSystemLibs && sample < 2 * kSystemLibs) {
                 sample |= kCallerTag;
+                caller = systemCaller(regs);
+            }
             t.samples[n] = sample;
+            t.callers[n] = caller;
             t.count.store(n + 1, std::memory_order_release);
         }
         return;
@@ -92,13 +125,20 @@ void noteHotJit(uint64_t address, int count);
 // Aggregates one thread's window: sorts the samples in place and prints the top entries.
 void report(int fd, ThreadSamples& t, double window_start) {
     // Copy first: the handler keeps writing into t.samples once count is reset.
-    static uint64_t s[kMaxSamples];
+    static uint64_t s[kMaxSamples], c[kMaxSamples];
     const int n = std::min(t.count.load(std::memory_order_acquire), kMaxSamples);
     memcpy(s, t.samples, sizeof(uint64_t) * n);
+    memcpy(c, t.callers, sizeof(uint64_t) * n);
     t.count.store(0, std::memory_order_release);
     if (n == 0)
         return;
     const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
+    // the system-module samples by the eboot code they came from (relative to .text, exact)
+    int callerCount = 0;
+    for (int i = 0; i < n; i++) {
+        if (s[i] & kCallerTag)
+            c[callerCount++] = c[i] ? c[i] - text : 0;
+    }
 
     // Eboot and JIT code: bucket by 16 bytes (eboot addresses relative to .text; JIT addresses
     // tagged with bit 63).
@@ -145,6 +185,28 @@ void report(int fd, ThreadSamples& t, double window_start) {
                      static_cast<unsigned long long>(entries[i].key & ~kCallerTag));
         else
             snprintf(line, sizeof(line), "  %5.1f%% elf 0x%llx\n", 100.0 * entries[i].count / n,
+                     static_cast<unsigned long long>(entries[i].key));
+        writeLine(fd, line);
+    }
+    // where the time in system modules was called from (each a return address: the call is just
+    // before it)
+    if (callerCount == 0)
+        return;
+    std::sort(c, c + callerCount);
+    int unique2 = 0;
+    for (int i = 0; i < callerCount;) {
+        int j = i;
+        while (j < callerCount && c[j] == c[i])
+            j++;
+        entries[unique2++] = {c[i], j - i};
+        i = j;
+    }
+    std::sort(entries, entries + unique2, [](const Entry& a, const Entry& b) { return a.count > b.count; });
+    for (int i = 0; i < unique2 && i < 40 && entries[i].count >= 2; i++) {
+        if (entries[i].key == 0)
+            snprintf(line, sizeof(line), "  %5.1f%% system, called from: not found\n", 100.0 * entries[i].count / n);
+        else
+            snprintf(line, sizeof(line), "  %5.1f%% system, called from elf 0x%llx\n", 100.0 * entries[i].count / n,
                      static_cast<unsigned long long>(entries[i].key));
         writeLine(fd, line);
     }
