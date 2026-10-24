@@ -4268,10 +4268,10 @@ index 0000000..b80c12d
 +const char *M33T(const char *english);
 diff --git a/ps4/PS4Main.cpp b/ps4/PS4Main.cpp
 new file mode 100644
-index 0000000..8bf4692
+index 0000000..fb59f5b
 --- /dev/null
 +++ b/ps4/PS4Main.cpp
-@@ -0,0 +1,425 @@
+@@ -0,0 +1,427 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4346,6 +4346,7 @@ index 0000000..8bf4692
 +
 +extern "C" void ps4_boot_trace(const char *line);  // port/ps4_crashlog.cpp
 +extern "C" void ps4_sampler_start();                // port/ps4_sampler.cpp
++extern "C" void ps4_sampler_register_thread(const char *name);  // ...the threads it samples
 +extern "C" size_t ps4_heap_footprint();             // port/ps4_runtime.cpp
 +
 +// L1 held while the app starts: no XMB this time, even with Start in the XMB on (UI/NativeApp.cpp).
@@ -4511,6 +4512,7 @@ index 0000000..8bf4692
 +	Trace("main loop");
 +	std::thread emuThread([&] {
 +		SetCurrentThreadName("EmuThread");
++		ps4_sampler_register_thread("EmuThread");  // (sampled with /data/March33/profile.txt)
 +		RunMainLoop(graphicsContext, new NativeApplication(), [&](GraphicsContext *ctx) {
 +			NativeFrame(ctx);
 +			return !(g_quitRequested || g_restartRequested);
