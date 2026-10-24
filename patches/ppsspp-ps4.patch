@@ -691,10 +691,10 @@ index 93654cf..fe1e1a9 100644
  	// Use gameID_EmulatedTimestamp for filename
  	std::string discID = g_paramSFO.GetDiscID();
 diff --git a/Core/Config.cpp b/Core/Config.cpp
-index a15dc9e..4dc7fb4 100644
+index a15dc9e..e6de06e 100644
 --- a/Core/Config.cpp
 +++ b/Core/Config.cpp
-@@ -267,11 +267,17 @@ static const ConfigSetting generalSettings[] = {
+@@ -267,11 +267,18 @@ static const ConfigSetting generalSettings[] = {
  	ConfigSetting("Language", SETTING(g_Config, sLanguageIni), &DefaultLangRegion, CfgFlag::DEFAULT),
  	ConfigSetting("ForceLagSync2", SETTING(g_Config, bForceLagSync), false, CfgFlag::PER_GAME),
  	ConfigSetting("DiscordRichPresence", SETTING(g_Config, bDiscordRichPresence), false, CfgFlag::DEFAULT),
@@ -708,11 +708,12 @@ index a15dc9e..4dc7fb4 100644
  	ConfigSetting("AutoLoadSaveState", SETTING(g_Config, iAutoLoadSaveState), 0, CfgFlag::PER_GAME),
  	ConfigSetting("EnableCheats", SETTING(g_Config, bEnableCheats), false, CfgFlag::PER_GAME | CfgFlag::REPORT),
 +	ConfigSetting("M33Rewind", SETTING(g_Config, bM33Rewind), true, CfgFlag::PER_GAME),
++	ConfigSetting("M33PerfLog", SETTING(g_Config, bM33PerfLog), true, CfgFlag::DEFAULT),
 +	ConfigSetting("M33FrameGen", SETTING(g_Config, bM33FrameGen), false, CfgFlag::PER_GAME),
  	ConfigSetting("EnablePlugins", SETTING(g_Config, bEnablePlugins), true, CfgFlag::PER_GAME | CfgFlag::REPORT),
  	ConfigSetting("EnableFileHandlerPlugins", SETTING(g_Config, bEnableFileHandlerPlugins), false, CfgFlag::DEFAULT),
  	ConfigSetting("CwCheatRefreshRate", SETTING(g_Config, iCwCheatRefreshIntervalMs), 77, CfgFlag::PER_GAME),
-@@ -328,6 +334,8 @@ static const ConfigSetting generalSettings[] = {
+@@ -328,6 +335,8 @@ static const ConfigSetting generalSettings[] = {
  	ConfigSetting("CompressSymbols", SETTING(g_Config, bCompressSymbols), true, CfgFlag::DEFAULT),
  	ConfigSetting("CacheFullIsoInRam", SETTING(g_Config, bCacheFullIsoInRam), false, CfgFlag::PER_GAME),
  	ConfigSetting("AutoUpgradeFirmware", SETTING(g_Config, bAutoUpgradeFirmware), true, CfgFlag::DEFAULT),
@@ -721,7 +722,7 @@ index a15dc9e..4dc7fb4 100644
  	ConfigSetting("RemoteISOPort", SETTING(g_Config, iRemoteISOPort), 0, CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOServer", SETTING(g_Config, sLastRemoteISOServer), "", CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOPort", SETTING(g_Config, iLastRemoteISOPort), 0, CfgFlag::DEFAULT),
-@@ -455,6 +463,9 @@ static int DefaultInternalResolution() {
+@@ -455,6 +464,9 @@ static int DefaultInternalResolution() {
  	return scale;
  #elif PPSSPP_PLATFORM(IOS)
  	return 2;
@@ -731,7 +732,7 @@ index a15dc9e..4dc7fb4 100644
  #else
  	return 0;
  #endif
-@@ -1150,7 +1161,12 @@ static const ConfigSetting upgradeSettings[] = {
+@@ -1150,7 +1162,12 @@ static const ConfigSetting upgradeSettings[] = {
  };
  
  static const ConfigSetting themeSettings[] = {
@@ -744,7 +745,7 @@ index a15dc9e..4dc7fb4 100644
  };
  
  static const ConfigSetting vrSettings[] = {
-@@ -1403,6 +1419,13 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
+@@ -1403,6 +1420,13 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
  	bool postShadersInitialized = iniFile.HasSection("PostShaderList");
  	Section *postShaderChain = iniFile.GetOrCreateSection("PostShaderList");
  	Section *postShaderSetting = iniFile.GetOrCreateSection("PostShaderSetting");
@@ -759,7 +760,7 @@ index a15dc9e..4dc7fb4 100644
  		postShaderChain->Set("PostShader1", "ColorCorrection");
  		postShaderSetting->Set("ColorCorrectionSettingCurrentValue1", 1.0f);
 diff --git a/Core/Config.h b/Core/Config.h
-index 3adb876..f463326 100644
+index 3adb876..8c77108 100644
 --- a/Core/Config.h
 +++ b/Core/Config.h
 @@ -253,6 +253,8 @@ struct Config : public ConfigBlock {
@@ -771,11 +772,12 @@ index 3adb876..f463326 100644
  	int iRemoteISOPort; // Also used for serving a local remote debugger.
  	std::string sLastRemoteISOServer;
  	int iLastRemoteISOPort;
-@@ -372,6 +374,8 @@ struct Config : public ConfigBlock {
+@@ -372,6 +374,9 @@ struct Config : public ConfigBlock {
  	int iAutoLoadSaveState; // 0 = off, 1 = oldest (deprecated), 2 = newest, 3+ = slot number + 3 (up to 5)
  	int iSaveStateSlotCount;
  	bool bEnableCheats;
 +	bool bM33Rewind;  // M33: rewind on L2 (ps4/PS4Rewind.cpp)
++	bool bM33PerfLog;  // M33: how a game runs, in ppsspp.log every 10 s (ps4/PS4Perf.cpp)
 +	bool bM33FrameGen;  // M33: frame generation, 30 -> 60 (GPU/Common/PresentationCommon.cpp)
  	bool bReloadCheats;
  	bool bEnablePlugins;
@@ -1967,10 +1969,10 @@ index 0bf44c7..7f42b61 100644
  		if (g_Config.iShowStatusFlags & (int)ShowStatusFlags::BATTERY_PERCENT) {
  			const int percentage = System_GetPropertyInt(SYSPROP_BATTERY_PERCENTAGE);
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
-index e1a8d56..4c7af55 100644
+index e1a8d56..345df47 100644
 --- a/UI/EmuScreen.cpp
 +++ b/UI/EmuScreen.cpp
-@@ -60,6 +60,14 @@ using namespace std::placeholders;
+@@ -60,6 +60,15 @@ using namespace std::placeholders;
  #include "Core/MemFault.h"
  #include "Core/Reporting.h"
  #include "Core/Util/PathUtil.h"
@@ -1980,12 +1982,13 @@ index e1a8d56..4c7af55 100644
 +#include "ps4/PS4Pad.h"
 +#include "ps4/PS4QuickMenu.h"
 +#include "ps4/PS4Rewind.h"
++#include "ps4/PS4Perf.h"
 +#include "ps4/PS4XmbGames.h"
 +#endif
  #include "Core/System.h"
  #include "GPU/Common/PresentationCommon.h"
  #include "GPU/GPUState.h"
-@@ -102,6 +110,15 @@ using namespace std::placeholders;
+@@ -102,6 +111,15 @@ using namespace std::placeholders;
  #endif
  
  #ifndef MOBILE_DEVICE
@@ -2001,7 +2004,7 @@ index e1a8d56..4c7af55 100644
  static AVIDump avi;
  #endif
  
-@@ -164,6 +181,9 @@ EmuScreen::EmuScreen(const Path &filename)
+@@ -164,6 +182,9 @@ EmuScreen::EmuScreen(const Path &filename)
  	: gamePath_(filename) {
  	saveStateSlot_ = SaveState::GetCurrentSlot();
  	g_controlMapper.AddListener(this);
@@ -2011,7 +2014,7 @@ index e1a8d56..4c7af55 100644
  
  	_dbg_assert_(coreState == CORE_POWERDOWN);
  
-@@ -222,7 +242,6 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+@@ -222,7 +243,6 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
  	if (!bootAllowStorage(filename)) {
  		return;
  	}
@@ -2019,7 +2022,7 @@ index e1a8d56..4c7af55 100644
  	if (Achievements::IsBlockingExecution()) {
  		// Keep waiting.
  		return;
-@@ -318,6 +337,33 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+@@ -318,6 +338,33 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
  	coreParam.enableSound = g_Config.bEnableSound;
  	coreParam.fileToStart = filename;
  	coreParam.mountIso.clear();
@@ -2053,7 +2056,7 @@ index e1a8d56..4c7af55 100644
  	coreParam.mountRoot = g_Config.mountRoot;
  	coreParam.startBreak = !g_Config.bAutoRun;
  	coreParam.headLess = false;
-@@ -449,6 +495,9 @@ void EmuScreen::bootComplete() {
+@@ -449,6 +496,9 @@ void EmuScreen::bootComplete() {
  
  EmuScreen::~EmuScreen() {
  	g_controlMapper.RemoveListener(this);
@@ -2063,7 +2066,7 @@ index e1a8d56..4c7af55 100644
  
  	std::string gameID = g_paramSFO.GetValueString("DISC_ID");
  	g_Config.TimeTracker().Stop(gameID);
-@@ -548,7 +597,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
+@@ -548,7 +598,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
  	// External commands, like from the Windows UI.
  	// This happens on the main thread.
  	if (message == UIMessage::REQUEST_GAME_PAUSE && screenManager()->topScreen() == this) {
@@ -2072,7 +2075,7 @@ index e1a8d56..4c7af55 100644
  	} else if (message == UIMessage::REQUEST_GAME_STOP) {
  		// We will push MainScreen in update().
  		if (bootPending_) {
-@@ -677,7 +726,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
+@@ -677,7 +727,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
  				// use this as the fallback way to get into the menu.
  				// Don't do it on the first resume though, in case we launch directly into emuscreen, like from a frontend - see #18926
  				if (!equals(value, "first")) {
@@ -2081,7 +2084,7 @@ index e1a8d56..4c7af55 100644
  				}
  			}
  		}
-@@ -1417,6 +1466,19 @@ void EmuScreen::update() {
+@@ -1417,6 +1467,19 @@ void EmuScreen::update() {
  	resumeButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR && Memory::MemFault_MayBeResumable() ? V_VISIBLE : V_GONE);
  	resetButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR ? V_VISIBLE : V_GONE);
  	backButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR ? V_VISIBLE : V_GONE);
@@ -2101,7 +2104,7 @@ index e1a8d56..4c7af55 100644
  
  	if (chatButton_ && chatMenu_) {
  		if (chatMenu_->GetVisibility() != V_GONE) {
-@@ -1464,9 +1526,10 @@ void EmuScreen::update() {
+@@ -1464,9 +1527,10 @@ void EmuScreen::update() {
  
  	if (pauseTrigger_) {
  		pauseTrigger_ = false;
@@ -2113,7 +2116,7 @@ index e1a8d56..4c7af55 100644
  	if (!PSP_IsInited())
  		return;
  
-@@ -1715,6 +1778,10 @@ bool EmuScreen::AllowFocusMovement() const {
+@@ -1715,6 +1779,10 @@ bool EmuScreen::AllowFocusMovement() const {
  	if (chatMenu_ && chatMenu_->GetVisibility() == UI::V_VISIBLE) {
  		return true;
  	}
@@ -2124,7 +2127,7 @@ index e1a8d56..4c7af55 100644
  	// We have just a game controller and possibly a chat and debug button. Don't allow focus movement.
  	return false;
  }
-@@ -1735,6 +1802,14 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1735,6 +1803,14 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  	PSP_UpdateDebugStats((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::DEBUG_STATS || g_Config.bLogFrameDrops);
  	clearColor_ = 0;
  	bool blockedExecution = Achievements::IsBlockingExecution();
@@ -2139,7 +2142,21 @@ index e1a8d56..4c7af55 100644
  	if (!blockedExecution) {
  		// We process savestates before running the frame.
  		SaveState::Process();
-@@ -1805,6 +1880,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1762,7 +1838,13 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+ 			}
+ 		}
+ 
++#if PPSSPP_PLATFORM(PS4)
++		const double runStart = time_now_d();
++#endif
+ 		PSP_RunLoopWhileState();
++#if PPSSPP_PLATFORM(PS4)
++		M33Perf_Frame((time_now_d() - runStart) * 1000.0);  // (Settings > System > Performance log)
++#endif
+ 
+ 		// Hopefully, after running, coreState is now CORE_NEXTFRAME
+ 		switch (coreState) {
+@@ -1805,6 +1887,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  			// Run post processing and other passes.
  			gpu->PrepareCopyDisplayToOutput(displayLayoutConfig);
  			gpu->EndHostFrame();
@@ -2150,7 +2167,7 @@ index e1a8d56..4c7af55 100644
  
  			// The right time to run this
  			if (ScreenshotNotifyPostGameRender(draw) && skipBufferEffects) {
-@@ -1841,6 +1920,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1841,6 +1927,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  }
  
  bool EmuScreen::hasVisibleUI() {
@@ -2161,7 +2178,7 @@ index e1a8d56..4c7af55 100644
  	// Regular but uncommon UI.
  	if (saveStatePreview_->GetVisibility() != UI::V_GONE || loadingSpinner_->GetVisibility() == UI::V_VISIBLE)
  		return true;
-@@ -1872,6 +1955,9 @@ void EmuScreen::renderUI() {
+@@ -1872,6 +1962,9 @@ void EmuScreen::renderUI() {
  	// This sets up some important states but not the viewport.
  	ctx->Begin();
  
@@ -2328,10 +2345,26 @@ index 9f3e495..da47ce4 100644
  	Path nandRoot_;
  	InstalledFirmwareInfo info_;
 diff --git a/UI/GameBrowser.cpp b/UI/GameBrowser.cpp
-index b205c73..d77af7c 100644
+index b205c73..19bbac5 100644
 --- a/UI/GameBrowser.cpp
 +++ b/UI/GameBrowser.cpp
-@@ -848,8 +848,11 @@ Path GameBrowser::HomePath() {
+@@ -41,6 +41,15 @@
+ #include "Core/Util/VideoPlayer.h"
+ 
+ #include "UI/GameBrowser.h"
++#if PPSSPP_PLATFORM(PS4)
++#include <atomic>
++#include <map>
++#include <thread>
++#include "Common/File/DirListing.h"
++#include "Common/Thread/ThreadUtil.h"
++#include "UI/GameInfoCache.h"
++#include "ps4/PS4Lang.h"
++#endif
+ #include "UI/RemoteISOScreen.h"
+ #include "UI/SavedataScreen.h"
+ #include "UI/Store.h"
+@@ -848,8 +857,11 @@ Path GameBrowser::HomePath() {
  	}
  #if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(SWITCH) || PPSSPP_PLATFORM(WINDOWS) || PPSSPP_PLATFORM(UWP) || PPSSPP_PLATFORM(IOS)
  	return g_Config.memStickDirectory;
@@ -2344,7 +2377,100 @@ index b205c73..d77af7c 100644
  #endif
  }
  
-@@ -1096,6 +1099,11 @@ void GameBrowser::Refresh() {
+@@ -879,8 +891,70 @@ bool GameBrowser::HasSpecialFiles(std::vector<Path> &filenames) {
+ 	return false;
+ }
+ 
++#if PPSSPP_PLATFORM(PS4)
++// M33: the games folder (or whichever is shown) looked at every 2 s, on a thread of its own: each
++// entry's size and time. A change shows once it has held still for a look: a game copied in over
++// FTP comes up when the copy is done, not half-copied, and what's new or different is read again.
++struct GameBrowser::FolderLook {
++	Path path;
++	std::atomic<bool> busy{ false };
++	bool haveResult = false, haveShown = false;
++	std::map<std::string, std::pair<uint64_t, uint64_t>> result, before, shown;
++};
++
++void GameBrowser::WatchFolder() {
++	const Path path = path_.GetPath();
++	if (path.empty() || path.ToString() == "!RECENT" || path.Type() != PathType::NATIVE)
++		return;
++	if (!look_ || look_->path != path) {
++		look_ = std::make_shared<FolderLook>();
++		look_->path = path;
++		lookAt_ = 0.0;
++	}
++	FolderLook &look = *look_;
++	const double now = time_now_d();
++	if (look.busy || now - lookAt_ < 2.0)
++		return;
++	if (look.haveResult) {
++		look.haveResult = false;
++		if (!look.haveShown) {
++			look.shown = look.result;
++			look.haveShown = true;
++		} else if (look.result == look.before && look.result != look.shown) {
++			std::vector<Path> changed;
++			for (const auto &[name, stamp] : look.result) {
++				auto it = look.shown.find(name);
++				if (it == look.shown.end() || it->second != stamp)
++					changed.push_back(path / name);
++			}
++			g_gameInfoCache->Forget(changed);
++			NOTICE_LOG(Log::System, "M33: %s changed (%d new or different), the list made again", path.c_str(), (int)changed.size());
++			look.shown = look.result;
++			path_.Refresh();
++			refreshPending_ = true;
++		}
++		look.before = look.result;
++	}
++	lookAt_ = now;
++	look.busy = true;
++	std::thread([l = look_] {
++		SetCurrentThreadName("M33FolderLook");
++		std::vector<File::FileInfo> files;
++		File::GetFilesInDir(l->path, &files);
++		l->result.clear();
++		for (const File::FileInfo &f : files)
++			l->result[f.name] = { f.size, f.mtime };
++		l->haveResult = true;
++		l->busy = false;
++	}).detach();
++}
++#endif
++
+ void GameBrowser::Update() {
+ 	LinearLayout::Update();
++#if PPSSPP_PLATFORM(PS4)
++	WatchFolder();
++#endif
+ 	if (refreshPending_) {
+ 		path_.Refresh();
+ 	}
+@@ -1044,10 +1118,21 @@ void GameBrowser::Refresh() {
+ 		layoutChoice->AddChoice(ImageID("I_LARGE_LIST"));
+ 		layoutChoice->SetSelection((int)lastViewMode_, false);
+ 		layoutChoice->OnChoice.Handle(this, &GameBrowser::LayoutChange);
++#if PPSSPP_PLATFORM(PS4)
++		// M33: "Refresh" written out (the icon alone went unnoticed), and every game read again (one
++		// copied in while it was listed came up without its title and icon). The folder is also
++		// watched (WatchFolder).
++		topBar->Add(new Choice(M33T("Refresh"), ImageID("I_ROTATE_LEFT"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Add([=](UI::EventParams &e) {
++			g_gameInfoCache->Clear();
++			path_.Refresh();
++			refreshPending_ = true;
++		});
++#else
+ 		topBar->Add(new Choice(ImageID("I_ROTATE_LEFT"), new LayoutParams(64.0f, 64.0f)))->OnClick.Add([=](UI::EventParams &e) {
+ 			path_.Refresh();
+ 			refreshPending_ = true;
+ 		});
++#endif
+ 		topBar->Add(new Choice(ImageID("I_GEAR"), new LayoutParams(64.0f, 64.0f)))->OnClick.Handle(this, &GameBrowser::GridSettingsClick);
+ 
+ 		if (gridStyle) {
+@@ -1096,6 +1181,11 @@ void GameBrowser::Refresh() {
  		std::vector<File::FileInfo> fileInfo;
  		path_.GetListing(fileInfo, "iso:cso:chd:pbp:elf:prx:ppdmp:");
  		for (size_t i = 0; i < fileInfo.size(); i++) {
@@ -2356,8 +2482,85 @@ index b205c73..d77af7c 100644
  			bool isGame = !fileInfo[i].isDirectory;
  			bool isSaveData = false;
  			// Check if eboot directory. TODO: Should ideally be done off-thread somehow.
+diff --git a/UI/GameBrowser.h b/UI/GameBrowser.h
+index 357cdde..25a2c29 100644
+--- a/UI/GameBrowser.h
++++ b/UI/GameBrowser.h
+@@ -1,8 +1,11 @@
+ #pragma once
+ 
+ #include <functional>
++#include <memory>
+ #include <string_view>
+ 
++#include "ppsspp_config.h"
++
+ #include "Common/File/Path.h"
+ #include "Common/UI/ViewGroup.h"
+ #include "Common/File/PathBrowser.h"
+@@ -95,4 +98,12 @@ class GameBrowser : public UI::LinearLayout {
+ 	bool portrait_ = false;
+ 	Path aliasMatch_;
+ 	std::string aliasDisplay_;
++#if PPSSPP_PLATFORM(PS4)
++	// M33: the shown folder, looked at every 2 s in the background; once a change has held still
++	// for one look (a copy has finished), the list is made again (GameBrowser.cpp)
++	struct FolderLook;
++	void WatchFolder();
++	std::shared_ptr<FolderLook> look_;
++	double lookAt_ = 0.0;
++#endif
+ };
+diff --git a/UI/GameInfoCache.cpp b/UI/GameInfoCache.cpp
+index 0cde318..944a697 100644
+--- a/UI/GameInfoCache.cpp
++++ b/UI/GameInfoCache.cpp
+@@ -1033,6 +1033,29 @@ void GameInfoCache::Clear() {
+ 	info_.clear();
+ }
+ 
++void GameInfoCache::Forget(const std::vector<Path> &paths) {
++	std::lock_guard<std::mutex> lock(mapLock_);
++	for (const Path &path : paths) {
++		auto it = info_.find(path.ToString());
++		if (it == info_.end())
++			continue;
++		std::shared_ptr<GameInfo> info = it->second;
++		if (info->HasFileLoader()) {
++			auto fl = info->GetFileLoader();
++			if (fl)
++				fl->Cancel();
++		}
++		{
++			std::lock_guard<std::mutex> infoLock(info->lock);
++			info->pic0.Clear();
++			info->pic1.Clear();
++			info->icon.Clear();
++			info->hasFlags &= ~(GameInfoFlags::PIC0 | GameInfoFlags::PIC1 | GameInfoFlags::ICON);
++		}
++		info_.erase(it);
++	}
++}
++
+ void GameInfoCache::CancelAll() {
+ 	std::lock_guard<std::mutex> lock(mapLock_);
+ 	for (const auto& info : info_) {
+diff --git a/UI/GameInfoCache.h b/UI/GameInfoCache.h
+index 335dee8..e9c3d81 100644
+--- a/UI/GameInfoCache.h
++++ b/UI/GameInfoCache.h
+@@ -221,6 +221,9 @@ class GameInfoCache {
+ 	// Cancels in-flight loads and drops everything, textures included. Main thread only.
+ 	void Clear();
+ 	void PurgeType(IdentifiedFileType fileType);
++	// M33: drops what's known about these files (copied in while listed, or over an older copy), to
++	// be read again when next asked for. Main thread only.
++	void Forget(const std::vector<Path> &paths);
+ 
+ 	// All data in GameInfo including icon.texture may be zero the first time you call this
+ 	// but filled in later asynchronously in the background. So keep calling this,
 diff --git a/UI/GameSettingsScreen.cpp b/UI/GameSettingsScreen.cpp
-index 4df7018..939e590 100644
+index 4df7018..e4ad29d 100644
 --- a/UI/GameSettingsScreen.cpp
 +++ b/UI/GameSettingsScreen.cpp
 @@ -43,6 +43,9 @@
@@ -2381,6 +2584,17 @@ index 4df7018..939e590 100644
  	static const char *frameSkip[] = {"Off", "1", "2", "3", "4", "5", "6", "7", "8"};
  	PopupMultiChoice *frameSkipping = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iFrameSkip, gr->T("Frame Skipping"), frameSkip, 0, ARRAY_SIZE(frameSkip), I18NCat::GRAPHICS, screenManager()));
  	frameSkipping->SetChoicesUntranslated(1, (int)ARRAY_SIZE(frameSkip) - 1);
+@@ -1368,6 +1375,10 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
+ 	systemSettings->Add(enableReportsCheckbox);
+ 
+ 	systemSettings->Add(new ItemHeader(sy->T("Emulation")));
++#if PPSSPP_PLATFORM(PS4)
++	// M33: speed, emulation time and GPU work in ppsspp.log every 10 s (ps4/PS4Perf.cpp)
++	systemSettings->Add(new CheckBox(&g_Config.bM33PerfLog, sy->T("M33PerfLog", M33T("Performance log (ppsspp.log, every 10 s)"))));
++#endif
+ 
+ 	systemSettings->Add(new CheckBox(&g_Config.bFastMemory, sy->T("Fast Memory", "Fast Memory")))->OnClick.Handle(this, &GameSettingsScreen::OnJitAffectingSetting);
+ 	systemSettings->Add(new CheckBox(&g_Config.bIgnoreBadMemAccess, sy->T("Ignore bad memory accesses")));
 diff --git a/UI/MainScreen.cpp b/UI/MainScreen.cpp
 index 03d80c5..99e25b5 100644
 --- a/UI/MainScreen.cpp
@@ -3940,10 +4154,10 @@ index 0000000..4cd600c
 +}  // namespace PS4Keyboard
 diff --git a/ps4/PS4Lang.cpp b/ps4/PS4Lang.cpp
 new file mode 100644
-index 0000000..7a9f4ab
+index 0000000..ea1dedd
 --- /dev/null
 +++ b/ps4/PS4Lang.cpp
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,96 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4013,6 +4227,8 @@ index 0000000..7a9f4ab
 +	{ "Frame generation (30 to 60 FPS, experimental)", { "Generación de fotogramas (30 a 60 FPS, experimental)", "Génération d'images (30 à 60 FPS, expérimental)", "Bildgenerierung (30 auf 60 FPS, experimentell)", "Generazione fotogrammi (da 30 a 60 FPS, sperimentale)", "Geração de quadros (30 para 60 FPS, experimental)", "Framegeneratie (30 naar 60 FPS, experimenteel)", "Generowanie klatek (30 do 60 FPS, eksperymentalne)", "Kare üretimi (30'dan 60 FPS'ye, deneysel)", "Генерация кадров (30 → 60 FPS, экспериментально)", "フレーム生成 (30→60 FPS、実験的)", "帧生成（30→60 FPS，实验性）", "影格生成（30→60 FPS，實驗性）", "프레임 생성 (30→60 FPS, 실험적)" } },
 +	{ "Play the PSP game boot when a game starts", { "Mostrar el arranque de PSP al iniciar un juego", "Jouer le démarrage PSP au lancement d'un jeu", "PSP-Startanimation beim Spielstart zeigen", "Mostra l'avvio della PSP all'inizio di un gioco", "Mostrar a abertura do PSP ao iniciar um jogo", "PSP-opstartanimatie tonen bij het starten van een spel", "Pokaż animację startową PSP przy uruchamianiu gry", "Oyun başlarken PSP açılışını oynat", "Показывать заставку PSP при запуске игры", "ゲーム起動時にPSPの起動画面を表示", "启动游戏时播放 PSP 开机画面", "啟動遊戲時播放 PSP 開機畫面", "게임 시작 시 PSP 부팅 화면 재생" } },
 +	{ "Off: games start straight away, without the firmware", { "Desactivado: los juegos se inician directamente, sin el firmware", "Désactivé : les jeux démarrent directement, sans le firmware", "Aus: Spiele starten sofort, ohne die Firmware", "Disattivato: i giochi partono subito, senza il firmware", "Desligado: os jogos iniciam direto, sem o firmware", "Uit: spellen starten meteen, zonder de firmware", "Wył.: gry uruchamiają się od razu, bez firmware", "Kapalı: oyunlar doğrudan, yazılım olmadan başlar", "Выкл.: игры запускаются сразу, без прошивки", "オフ：ファームウェアを通さずにすぐ起動", "关闭：不经过固件，直接启动游戏", "關閉：不經過韌體，直接啟動遊戲", "끄기: 펌웨어 없이 게임을 바로 시작" } },
++	{ "Refresh", { "Actualizar", "Actualiser", "Aktualisieren", "Aggiorna", "Atualizar", "Vernieuwen", "Odśwież", "Yenile", "Обновить", "更新", "刷新", "重新整理", "새로 고침" } },
++	{ "Performance log (ppsspp.log, every 10 s)", { "Registro de rendimiento (ppsspp.log, cada 10 s)", "Journal des performances (ppsspp.log, toutes les 10 s)", "Leistungsprotokoll (ppsspp.log, alle 10 s)", "Registro prestazioni (ppsspp.log, ogni 10 s)", "Registro de desempenho (ppsspp.log, a cada 10 s)", "Prestatielogboek (ppsspp.log, elke 10 s)", "Dziennik wydajności (ppsspp.log, co 10 s)", "Performans günlüğü (ppsspp.log, 10 sn'de bir)", "Журнал производительности (ppsspp.log, каждые 10 с)", "パフォーマンスログ (ppsspp.log、10秒ごと)", "性能日志（ppsspp.log，每 10 秒）", "效能記錄（ppsspp.log，每 10 秒）", "성능 로그 (ppsspp.log, 10초마다)" } },
 +};
 +
 +int CurrentLang() {
@@ -4808,6 +5024,124 @@ index 0000000..2f80279
 +bool RewindHeld();
 +
 +}  // namespace PS4Pad
+diff --git a/ps4/PS4Perf.cpp b/ps4/PS4Perf.cpp
+new file mode 100644
+index 0000000..0b840ae
+--- /dev/null
++++ b/ps4/PS4Perf.cpp
+@@ -0,0 +1,99 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++// M33: how a game runs, in ppsspp.log every 10 s (Settings > System > Performance log): its speed,
++// how long the emulator took per frame, and what the game asked of the GPU per frame - the draws,
++// and what makes the emulator wait for the PS4's GPU (readbacks, block transfers, copies). For
++// telling why a game is slow from the log alone.
++
++#include <algorithm>
++
++#include "Common/Log.h"
++#include "Common/TimeUtil.h"
++#include "Core/Config.h"
++#include "Core/HW/Display.h"
++#include "GPU/GPU.h"
++#include "ps4/PS4Perf.h"
++
++namespace {
++
++struct Totals {
++	int frames = 0;
++	double emuMs = 0.0, emuMaxMs = 0.0;
++	int late = 0;  // frames more than 25 ms after the one before
++	long long draws = 0, flushes = 0, verts = 0, decoded = 0, hashed = 0, uploads = 0;
++	long long readbacks = 0, blocking = 0, blockTransfers = 0, blendCopies = 0, selfTexCopies = 0;
++	long long colorCopies = 0, depthCopies = 0, reinterpret = 0, depal = 0, fbosCreated = 0, clears = 0;
++	long long softTransformed = 0;
++};
++
++Totals g_t;
++double g_since = 0.0, g_lastFrame = 0.0;
++
++}  // namespace
++
++void M33Perf_Frame(double emuMs) {
++	if (!g_Config.bM33PerfLog)
++		return;
++	const double now = time_now_d();
++	if (g_since == 0.0)
++		g_since = now;
++	if (g_lastFrame > 0.0 && now - g_lastFrame > 0.025)
++		g_t.late++;
++	g_lastFrame = now;
++	const GPUStatsPerFrame &f = gpuStats.perFrame;
++	g_t.frames++;
++	g_t.emuMs += emuMs;
++	g_t.emuMaxMs = std::max(g_t.emuMaxMs, emuMs);
++	g_t.draws += f.numDrawCalls;
++	g_t.flushes += f.numFlushes;
++	g_t.verts += f.numVertsSubmitted;
++	g_t.decoded += f.numTexturesDecoded;
++	g_t.hashed += f.numTexturesHashed;
++	g_t.uploads += f.numUploads;
++	g_t.readbacks += f.numReadbacks;
++	g_t.blocking += f.numBlockingReadbacks;
++	g_t.blockTransfers += f.numBlockTransfers;
++	g_t.blendCopies += f.numCopiesForShaderBlend;
++	g_t.selfTexCopies += f.numCopiesForSelfTex;
++	g_t.colorCopies += f.numColorCopies;
++	g_t.depthCopies += f.numDepthCopies;
++	g_t.reinterpret += f.numReinterpretCopies;
++	g_t.depal += f.numDepal;
++	g_t.fbosCreated += f.numFBOsCreated;
++	g_t.clears += f.numClears;
++	g_t.softTransformed += f.numSoftTransformedDraws;
++	const double secs = now - g_since;
++	if (secs < 10.0)
++		return;
++	float vps = 0, fps = 0, actual = 0;
++	__DisplayGetFPS(&vps, &fps, &actual);
++	const double n = std::max(1, g_t.frames);
++	NOTICE_LOG(Log::G3D,
++		"M33 perf: %.0f%% speed, game %.0f fps; %.1f frames/s, emulation %.1f ms a frame (most %.1f), %d late; per frame: "
++		"%.0f draws, %.0f flushes, %.0f vertices, %.1f textures decoded, %.1f hashed, %.1f uploads, %.2f readbacks (%.2f waiting), "
++		"%.2f block transfers, %.2f blend copies, %.2f self-texture copies, %.2f color copies, %.2f depth copies, %.2f reinterprets, "
++		"%.2f depal, %.2f new framebuffers, %.1f clears, %.1f software-transformed draws",
++		vps / 59.94f * 100.0f, actual, g_t.frames / secs, g_t.emuMs / n, g_t.emuMaxMs, g_t.late,
++		g_t.draws / n, g_t.flushes / n, g_t.verts / n, g_t.decoded / n, g_t.hashed / n, g_t.uploads / n, g_t.readbacks / n, g_t.blocking / n,
++		g_t.blockTransfers / n, g_t.blendCopies / n, g_t.selfTexCopies / n, g_t.colorCopies / n, g_t.depthCopies / n, g_t.reinterpret / n,
++		g_t.depal / n, g_t.fbosCreated / n, g_t.clears / n, g_t.softTransformed / n);
++	g_t = Totals();
++	g_since = now;
++}
++
++void M33Perf_Reset() {
++	g_t = Totals();
++	g_since = g_lastFrame = 0.0;
++}
+diff --git a/ps4/PS4Perf.h b/ps4/PS4Perf.h
+new file mode 100644
+index 0000000..a02b449
+--- /dev/null
++++ b/ps4/PS4Perf.h
+@@ -0,0 +1,7 @@
++#pragma once
++
++// M33: how a game runs, in ppsspp.log every 10 s (ps4/PS4Perf.cpp; Settings > System > Performance log).
++// After each emulated frame: how long the emulator took for it.
++void M33Perf_Frame(double emuMs);
++// A game started or stopped: no frames carried over.
++void M33Perf_Reset();
 diff --git a/ps4/PS4QuickMenu.cpp b/ps4/PS4QuickMenu.cpp
 new file mode 100644
 index 0000000..9a67f77
@@ -8212,10 +8546,10 @@ index 0000000..1ba337d
 +bool M33Fw_TakeDirect(const std::string &disc);
 diff --git a/ps4/ps4.cmake b/ps4/ps4.cmake
 new file mode 100644
-index 0000000..407ae6f
+index 0000000..80b4d64
 --- /dev/null
 +++ b/ps4/ps4.cmake
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,58 @@
 +# M33: PPSSPP's PS4 frontend, included from the top CMakeLists.txt once ${TargetBin} exists.
 +# Built with M33's toolchain (toolchain/ps4-m33.cmake, and ps4-love-style.cmake as the project
 +# include: PS4_RUNTIME_SOURCES, ps4_link_mesa, ps4_add_eboot).
@@ -8236,6 +8570,7 @@ index 0000000..407ae6f
 +	ps4/PS4QuickMenu.cpp
 +	ps4/PS4QuickMenu.h
 +	ps4/PS4Rewind.cpp
++	ps4/PS4Perf.cpp
 +	ps4/PS4Rewind.h
 +	ps4/PS4Pad.h
 +	ps4/PS4StartupClip.cpp
