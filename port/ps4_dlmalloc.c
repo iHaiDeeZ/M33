@@ -33,3 +33,28 @@ int ps4_heap_ok(void* msp) {
   mstate ms = (mstate)msp;
   return ok_magic(ms);
 }
+
+/* Bytes in use (what mallinfo's uordblks says; mallinfo itself is left out, NO_MALLINFO): a walk
+ * over every chunk, under the heap's lock - for a once-a-minute line, not more often. */
+size_t ps4_heap_in_use_of(void* msp) {
+  mstate m = (mstate)msp;
+  size_t used = 0;
+  if (!PREACTION(m)) {
+    if (is_initialized(m)) {
+      size_t mfree = m->topsize + TOP_FOOT_SIZE;
+      msegmentptr s = &m->seg;
+      while (s != 0) {
+        mchunkptr q = align_as_chunk(s->base);
+        while (segment_holds(s, q) && q != m->top && q->head != FENCEPOST_HEAD) {
+          if (!is_inuse(q))
+            mfree += chunksize(q);
+          q = next_chunk(q);
+        }
+        s = s->next;
+      }
+      used = m->footprint - mfree;
+    }
+    POSTACTION(m);
+  }
+  return used;
+}

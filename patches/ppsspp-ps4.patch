@@ -4493,10 +4493,10 @@ index 0000000..b80c12d
 +const char *M33T(const char *english);
 diff --git a/ps4/PS4Main.cpp b/ps4/PS4Main.cpp
 new file mode 100644
-index 0000000..fb59f5b
+index 0000000..3a4e0e3
 --- /dev/null
 +++ b/ps4/PS4Main.cpp
-@@ -0,0 +1,427 @@
+@@ -0,0 +1,429 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4573,6 +4573,8 @@ index 0000000..fb59f5b
 +extern "C" void ps4_sampler_start();                // port/ps4_sampler.cpp
 +extern "C" void ps4_sampler_register_thread(const char *name);  // ...the threads it samples
 +extern "C" size_t ps4_heap_footprint();             // port/ps4_runtime.cpp
++extern "C" size_t ps4_heap_in_use();                // ...the bytes in use
++extern "C" void ps4_memory_free(size_t *flexible, size_t *directBlock);  // ...free system memory
 +
 +// L1 held while the app starts: no XMB this time, even with Start in the XMB on (UI/NativeApp.cpp).
 +bool m33_skip_xmb = false;
@@ -4747,16 +4749,16 @@ index 0000000..fb59f5b
 +	// The main thread polls the pads, about 240 times a second (not while the keyboard is up: it
 +	// has the pad then), and hands typed text back.
 +	auto lastHeapLine = std::chrono::steady_clock::now();
-+	size_t lastHeapMiB = 0;
 +	while (!(g_quitRequested || g_restartRequested)) {
-+		// The heap's use, once a minute when it changed (a leak shows up in the boot trace)
++		// Memory, once a minute (a leak shows up in the boot trace): the heap's bytes in use (its
++		// footprint was the whole 512 MiB from the start), free flexible memory, and the biggest free
++		// block of direct memory (the GPU driver's)
 +		if (std::chrono::steady_clock::now() - lastHeapLine > std::chrono::seconds(60)) {
 +			lastHeapLine = std::chrono::steady_clock::now();
-+			const size_t mib = ps4_heap_footprint() >> 20;
-+			if (mib != lastHeapMiB) {
-+				lastHeapMiB = mib;
-+				Trace("heap: " + std::to_string(mib) + " MiB used");
-+			}
++			size_t flexible = 0, direct = 0;
++			ps4_memory_free(&flexible, &direct);
++			Trace("memory: heap " + std::to_string(ps4_heap_in_use() >> 20) + " MiB in use of " + std::to_string(ps4_heap_footprint() >> 20) +
++				", " + std::to_string(flexible >> 20) + " MiB flexible free, direct " + std::to_string(direct >> 20) + " MiB free in one block");
 +		}
 +		PS4Keyboard::Update();
 +		if (!PS4Keyboard::IsOpen())

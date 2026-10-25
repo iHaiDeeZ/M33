@@ -57,6 +57,8 @@ void* memcpy(void* dst, const void* src, size_t n);
 // port/ps4_crashlog.cpp (weak: a program may link without it).
 __attribute__((weak)) void ps4_boot_trace(const char* stage);
 int ps4_heap_ok(void* msp);  // port/ps4_dlmalloc.c
+size_t ps4_heap_in_use_of(void* msp);  // port/ps4_dlmalloc.c
+int32_t sceKernelAvailableDirectMemorySize(off_t searchStart, off_t searchEnd, size_t alignment, off_t* physAddrOut, size_t* sizeOut);
 
 extern char __text_start[];  // OpenOrbis link.x: start of .text (ELF address 0)
 }
@@ -578,6 +580,23 @@ size_t ps4_heap_footprint() {
     if (mspace overflow = __atomic_load_n(&g_overflow, __ATOMIC_ACQUIRE))
         bytes += mspace_footprint(overflow);
     return bytes;
+}
+// What is allocated right now, heap and overflow (the footprint above is the whole 512 MiB from the
+// start: the heap sits on a fixed block). A walk over the heap: once a minute at most.
+size_t ps4_heap_in_use() {
+    size_t bytes = ps4_heap_in_use_of(getHeap());
+    if (mspace overflow = __atomic_load_n(&g_overflow, __ATOMIC_ACQUIRE))
+        bytes += ps4_heap_in_use_of(overflow);
+    return bytes;
+}
+// Free system memory: flexible memory, and the biggest block of direct memory (the GPU driver's
+// memory comes from there).
+void ps4_memory_free(size_t* flexible, size_t* directBlock) {
+    *flexible = 0;
+    sceKernelAvailableFlexibleMemorySize(flexible);
+    off_t phys = 0;
+    *directBlock = 0;
+    sceKernelAvailableDirectMemorySize(0, sceKernelGetDirectMemorySize(), 16 * 1024, &phys, directBlock);
 }
 size_t ps4_replace_malloc_usable_size(void* ptr) { return ptr ? mspace_usable_size(ptr) : 0; }
 
