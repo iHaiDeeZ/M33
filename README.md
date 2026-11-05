@@ -102,7 +102,7 @@ you own.
 | L1 / R1 | L / R |
 | OPTIONS | START |
 | Touchpad click | SELECT |
-| **L2 (hold)** | **Rewind** |
+| **L2 (hold)** | **Rewind** (or the game's L2: turn off *Settings → Controls → L2 rewinds*, then map it) |
 | R2 | Fast-forward |
 | **L3 + R3** | **Quick menu** |
 | Right stick, L3, R3 | Free to map (Settings → Controls) |

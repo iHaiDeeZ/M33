@@ -778,10 +778,10 @@ index 93654cf..fe1e1a9 100644
  	// Use gameID_EmulatedTimestamp for filename
  	std::string discID = g_paramSFO.GetDiscID();
 diff --git a/Core/Config.cpp b/Core/Config.cpp
-index a15dc9e..e6de06e 100644
+index a15dc9e..78c90c6 100644
 --- a/Core/Config.cpp
 +++ b/Core/Config.cpp
-@@ -267,11 +267,18 @@ static const ConfigSetting generalSettings[] = {
+@@ -267,11 +267,19 @@ static const ConfigSetting generalSettings[] = {
  	ConfigSetting("Language", SETTING(g_Config, sLanguageIni), &DefaultLangRegion, CfgFlag::DEFAULT),
  	ConfigSetting("ForceLagSync2", SETTING(g_Config, bForceLagSync), false, CfgFlag::PER_GAME),
  	ConfigSetting("DiscordRichPresence", SETTING(g_Config, bDiscordRichPresence), false, CfgFlag::DEFAULT),
@@ -796,11 +796,12 @@ index a15dc9e..e6de06e 100644
  	ConfigSetting("EnableCheats", SETTING(g_Config, bEnableCheats), false, CfgFlag::PER_GAME | CfgFlag::REPORT),
 +	ConfigSetting("M33Rewind", SETTING(g_Config, bM33Rewind), true, CfgFlag::PER_GAME),
 +	ConfigSetting("M33PerfLog", SETTING(g_Config, bM33PerfLog), true, CfgFlag::DEFAULT),
++	ConfigSetting("M33RewindOnL2", SETTING(g_Config, bM33RewindOnL2), true, CfgFlag::PER_GAME),
 +	ConfigSetting("M33FrameGen", SETTING(g_Config, bM33FrameGen), false, CfgFlag::PER_GAME),
  	ConfigSetting("EnablePlugins", SETTING(g_Config, bEnablePlugins), true, CfgFlag::PER_GAME | CfgFlag::REPORT),
  	ConfigSetting("EnableFileHandlerPlugins", SETTING(g_Config, bEnableFileHandlerPlugins), false, CfgFlag::DEFAULT),
  	ConfigSetting("CwCheatRefreshRate", SETTING(g_Config, iCwCheatRefreshIntervalMs), 77, CfgFlag::PER_GAME),
-@@ -328,6 +335,8 @@ static const ConfigSetting generalSettings[] = {
+@@ -328,6 +336,8 @@ static const ConfigSetting generalSettings[] = {
  	ConfigSetting("CompressSymbols", SETTING(g_Config, bCompressSymbols), true, CfgFlag::DEFAULT),
  	ConfigSetting("CacheFullIsoInRam", SETTING(g_Config, bCacheFullIsoInRam), false, CfgFlag::PER_GAME),
  	ConfigSetting("AutoUpgradeFirmware", SETTING(g_Config, bAutoUpgradeFirmware), true, CfgFlag::DEFAULT),
@@ -809,7 +810,7 @@ index a15dc9e..e6de06e 100644
  	ConfigSetting("RemoteISOPort", SETTING(g_Config, iRemoteISOPort), 0, CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOServer", SETTING(g_Config, sLastRemoteISOServer), "", CfgFlag::DEFAULT),
  	ConfigSetting("LastRemoteISOPort", SETTING(g_Config, iLastRemoteISOPort), 0, CfgFlag::DEFAULT),
-@@ -455,6 +464,9 @@ static int DefaultInternalResolution() {
+@@ -455,6 +465,9 @@ static int DefaultInternalResolution() {
  	return scale;
  #elif PPSSPP_PLATFORM(IOS)
  	return 2;
@@ -819,7 +820,7 @@ index a15dc9e..e6de06e 100644
  #else
  	return 0;
  #endif
-@@ -1150,7 +1162,12 @@ static const ConfigSetting upgradeSettings[] = {
+@@ -1150,7 +1163,12 @@ static const ConfigSetting upgradeSettings[] = {
  };
  
  static const ConfigSetting themeSettings[] = {
@@ -832,7 +833,7 @@ index a15dc9e..e6de06e 100644
  };
  
  static const ConfigSetting vrSettings[] = {
-@@ -1403,6 +1420,13 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
+@@ -1403,6 +1421,13 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
  	bool postShadersInitialized = iniFile.HasSection("PostShaderList");
  	Section *postShaderChain = iniFile.GetOrCreateSection("PostShaderList");
  	Section *postShaderSetting = iniFile.GetOrCreateSection("PostShaderSetting");
@@ -847,7 +848,7 @@ index a15dc9e..e6de06e 100644
  		postShaderChain->Set("PostShader1", "ColorCorrection");
  		postShaderSetting->Set("ColorCorrectionSettingCurrentValue1", 1.0f);
 diff --git a/Core/Config.h b/Core/Config.h
-index 3adb876..8c77108 100644
+index 3adb876..fe202de 100644
 --- a/Core/Config.h
 +++ b/Core/Config.h
 @@ -253,6 +253,8 @@ struct Config : public ConfigBlock {
@@ -859,12 +860,13 @@ index 3adb876..8c77108 100644
  	int iRemoteISOPort; // Also used for serving a local remote debugger.
  	std::string sLastRemoteISOServer;
  	int iLastRemoteISOPort;
-@@ -372,6 +374,9 @@ struct Config : public ConfigBlock {
+@@ -372,6 +374,10 @@ struct Config : public ConfigBlock {
  	int iAutoLoadSaveState; // 0 = off, 1 = oldest (deprecated), 2 = newest, 3+ = slot number + 3 (up to 5)
  	int iSaveStateSlotCount;
  	bool bEnableCheats;
 +	bool bM33Rewind;  // M33: rewind on L2 (ps4/PS4Rewind.cpp)
 +	bool bM33PerfLog;  // M33: how a game runs, in ppsspp.log every 10 s (ps4/PS4Perf.cpp)
++	bool bM33RewindOnL2;  // M33: L2 rewinds; off, L2 goes to the game as its trigger axis (ps4/PS4Pad.cpp)
 +	bool bM33FrameGen;  // M33: frame generation, 30 -> 60 (GPU/Common/PresentationCommon.cpp)
  	bool bReloadCheats;
  	bool bEnablePlugins;
@@ -2785,7 +2787,7 @@ index 335dee8..e9c3d81 100644
  	// All data in GameInfo including icon.texture may be zero the first time you call this
  	// but filled in later asynchronously in the background. So keep calling this,
 diff --git a/UI/GameSettingsScreen.cpp b/UI/GameSettingsScreen.cpp
-index 4df7018..e4ad29d 100644
+index 4df7018..572b4bf 100644
 --- a/UI/GameSettingsScreen.cpp
 +++ b/UI/GameSettingsScreen.cpp
 @@ -43,6 +43,9 @@
@@ -2809,7 +2811,18 @@ index 4df7018..e4ad29d 100644
  	static const char *frameSkip[] = {"Off", "1", "2", "3", "4", "5", "6", "7", "8"};
  	PopupMultiChoice *frameSkipping = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iFrameSkip, gr->T("Frame Skipping"), frameSkip, 0, ARRAY_SIZE(frameSkip), I18NCat::GRAPHICS, screenManager()));
  	frameSkipping->SetChoicesUntranslated(1, (int)ARRAY_SIZE(frameSkip) - 1);
-@@ -1368,6 +1375,10 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
+@@ -779,6 +786,10 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
+ 	int deviceType = System_GetPropertyInt(SYSPROP_DEVICE_TYPE);
+ 
+ 	controlsSettings->Add(new ItemHeader(ms->T("Controls")));
++#if PPSSPP_PLATFORM(PS4)
++	// M33: L2 for rewind, or for the game (its trigger axis, to map in Control mapping: analog braking...)
++	controlsSettings->Add(new CheckBox(&g_Config.bM33RewindOnL2, co->T("M33RewindOnL2", M33T("L2 rewinds (off: L2 goes to the game)"))));
++#endif
+ 	controlsSettings->Add(new Choice(co->T("Control mapping")))->OnClick.Add([this](UI::EventParams &e) {
+ 		screenManager()->push(new ControlMappingScreen(gamePath_));
+ 	});
+@@ -1368,6 +1379,10 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
  	systemSettings->Add(enableReportsCheckbox);
  
  	systemSettings->Add(new ItemHeader(sy->T("Emulation")));
@@ -4379,10 +4392,10 @@ index 0000000..4cd600c
 +}  // namespace PS4Keyboard
 diff --git a/ps4/PS4Lang.cpp b/ps4/PS4Lang.cpp
 new file mode 100644
-index 0000000..ea1dedd
+index 0000000..0cf85aa
 --- /dev/null
 +++ b/ps4/PS4Lang.cpp
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,97 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4454,6 +4467,7 @@ index 0000000..ea1dedd
 +	{ "Off: games start straight away, without the firmware", { "Desactivado: los juegos se inician directamente, sin el firmware", "Désactivé : les jeux démarrent directement, sans le firmware", "Aus: Spiele starten sofort, ohne die Firmware", "Disattivato: i giochi partono subito, senza il firmware", "Desligado: os jogos iniciam direto, sem o firmware", "Uit: spellen starten meteen, zonder de firmware", "Wył.: gry uruchamiają się od razu, bez firmware", "Kapalı: oyunlar doğrudan, yazılım olmadan başlar", "Выкл.: игры запускаются сразу, без прошивки", "オフ：ファームウェアを通さずにすぐ起動", "关闭：不经过固件，直接启动游戏", "關閉：不經過韌體，直接啟動遊戲", "끄기: 펌웨어 없이 게임을 바로 시작" } },
 +	{ "Refresh", { "Actualizar", "Actualiser", "Aktualisieren", "Aggiorna", "Atualizar", "Vernieuwen", "Odśwież", "Yenile", "Обновить", "更新", "刷新", "重新整理", "새로 고침" } },
 +	{ "Performance log (ppsspp.log, every 10 s)", { "Registro de rendimiento (ppsspp.log, cada 10 s)", "Journal des performances (ppsspp.log, toutes les 10 s)", "Leistungsprotokoll (ppsspp.log, alle 10 s)", "Registro prestazioni (ppsspp.log, ogni 10 s)", "Registro de desempenho (ppsspp.log, a cada 10 s)", "Prestatielogboek (ppsspp.log, elke 10 s)", "Dziennik wydajności (ppsspp.log, co 10 s)", "Performans günlüğü (ppsspp.log, 10 sn'de bir)", "Журнал производительности (ppsspp.log, каждые 10 с)", "パフォーマンスログ (ppsspp.log、10秒ごと)", "性能日志（ppsspp.log，每 10 秒）", "效能記錄（ppsspp.log，每 10 秒）", "성능 로그 (ppsspp.log, 10초마다)" } },
++	{ "L2 rewinds (off: L2 goes to the game)", { "L2 rebobina (desactivado: L2 va al juego)", "L2 rembobine (désactivé : L2 va au jeu)", "L2 spult zurück (aus: L2 geht an das Spiel)", "L2 riavvolge (disattivato: L2 va al gioco)", "L2 retrocede (desligado: L2 vai para o jogo)", "L2 spoelt terug (uit: L2 gaat naar het spel)", "L2 przewija (wył.: L2 trafia do gry)", "L2 geri sarar (kapalı: L2 oyuna gider)", "L2 — перемотка (выкл.: L2 передаётся игре)", "L2で巻き戻し (オフ：L2をゲームに送る)", "L2 倒带（关闭：L2 交给游戏）", "L2 倒帶（關閉：L2 交給遊戲）", "L2로 되감기 (끄기: L2는 게임으로)" } },
 +};
 +
 +int CurrentLang() {
@@ -4928,10 +4942,10 @@ index 0000000..3a4e0e3
 +}
 diff --git a/ps4/PS4Pad.cpp b/ps4/PS4Pad.cpp
 new file mode 100644
-index 0000000..8064941
+index 0000000..1a1041e
 --- /dev/null
 +++ b/ps4/PS4Pad.cpp
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,289 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4953,6 +4967,8 @@ index 0000000..8064941
 +//   Cross/Circle/Square/Triangle = PSP buttons, D-pad, left stick = PSP stick, L1/R1 = L/R,
 +//   OPTIONS = START, touchpad click = SELECT, L2 (held) = rewind, R2 = fast-forward (analog),
 +//   L3 + R3 together = PPSSPP's in-game menu; right stick, L3, R3: free to map in Settings > Controls.
++// L2 goes to the game instead (its trigger axis, triggerL+ in the mapping) when Settings > Controls
++// > "L2 rewinds" is off, or rewind is off for the game (it was always rewind's, mapped or not).
 +
 +#include <orbis/Pad.h>
 +#include <orbis/UserService.h>
@@ -4968,6 +4984,7 @@ index 0000000..8064941
 +#include "Common/Input/KeyCodes.h"
 +#include "Common/Log.h"
 +#include "Common/System/NativeApp.h"
++#include "Core/Config.h"
 +#include "Core/KeyMap.h"
 +#include "ps4/PS4Pad.h"
 +
@@ -5137,11 +5154,13 @@ index 0000000..8064941
 +		NativeKey(KeyInput(device, kMenuKey, combo ? KeyInputFlags::DOWN : KeyInputFlags::UP));
 +	}
 +
++	// L2: rewind's, or the game's (its axis, for mapping like any other)
++	const bool l2Rewinds = g_Config.bM33Rewind && g_Config.bM33RewindOnL2;
 +	const float values[AX_COUNT] = {
 +		Stick(data.leftStick.x), Stick(data.leftStick.y), Stick(data.rightStick.x), Stick(data.rightStick.y),
-+		0.0f, Trigger(data.analogButtons.r2),
++		l2Rewinds ? 0.0f : Trigger(data.analogButtons.l2), Trigger(data.analogButtons.r2),
 +	};
-+	const bool rewind = (data.buttons & ORBIS_PAD_BUTTON_L2) || data.analogButtons.l2 > 64;
++	const bool rewind = l2Rewinds && ((data.buttons & ORBIS_PAD_BUTTON_L2) || data.analogButtons.l2 > 64);
 +	if (rewind)
 +		g_rewindPads |= 1u << slot;
 +	else
