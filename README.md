@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iHaiDeeZ/M33/releases/latest"><img alt="Release 1.04" src="https://img.shields.io/badge/release-1.04-9b7bff"></a>
+  <a href="https://github.com/iHaiDeeZ/M33/releases/latest"><img alt="Release 1.18" src="https://img.shields.io/badge/release-1.18-9b7bff"></a>
   <img alt="PS4 homebrew" src="https://img.shields.io/badge/PS4-homebrew-1f5fd6">
   <img alt="PSP" src="https://img.shields.io/badge/PSP-PPSSPP-48e0ff">
   <a href="LICENSE"><img alt="GPL-2.0" src="https://img.shields.io/badge/license-GPL--2.0-ff8ad4"></a>
@@ -60,12 +60,17 @@ You bring your own game backups. Nothing copyrighted is bundled: no games, no fi
 
 **Rewind, the way RetroArch does it**
 - Hold **L2** and the game plays backwards; let go and it carries on from there. Hold again to go
-  further back. On or off per game.
+  further back. On or off per game, and on any button you like.
+
+**Buttons as on your DualShock 4**
+- *Settings → Controls → Button mapping* (or the quick menu's **Controls**): every PSP button, the
+  stick, fast-forward and rewind, each with its PS4 button drawn as on the pad. Press Cross on one,
+  then the button you want; a button already in use swaps places.
 
 **A sharp picture**
 - Rendered at 4x (1920x1088, the TV's 1080p) with AMD FidelityFX's sharpening (FSR RCAS).
 - **Frame Generation** (experimental, off by default): a game running at 30 is shown at 60, with a
-  frame made between every two. Works best in games with a steady 30 fps.
+  frame made between every two from the motion between them. Works best in games with a steady 30 fps.
 
 **Everything else you'd expect**
 - **RetroAchievements**, online.
