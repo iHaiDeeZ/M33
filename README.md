@@ -102,10 +102,10 @@ you own.
 | L1 / R1 | L / R |
 | OPTIONS | START |
 | Touchpad click | SELECT |
-| **L2 (hold)** | **Rewind** (or the game's L2: turn off *Settings → Controls → L2 rewinds*, then map it) |
+| **L2 (hold)** | **Rewind** (any button you like: *Settings → Controls → Button mapping*, or the quick menu's *Controls*) |
 | R2 | Fast-forward |
 | **L3 + R3** | **Quick menu** |
-| Right stick, L3, R3 | Free to map (Settings → Controls) |
+| Right stick, L3, R3 | Free to map (*Settings → Controls → Button mapping*: each PSP button with its PS4 button, as on the pad) |
 
 ### In the quick menu
 

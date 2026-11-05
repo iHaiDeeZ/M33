@@ -778,7 +778,7 @@ index 93654cf..fe1e1a9 100644
  	// Use gameID_EmulatedTimestamp for filename
  	std::string discID = g_paramSFO.GetDiscID();
 diff --git a/Core/Config.cpp b/Core/Config.cpp
-index a15dc9e..78c90c6 100644
+index a15dc9e..04f779d 100644
 --- a/Core/Config.cpp
 +++ b/Core/Config.cpp
 @@ -267,11 +267,19 @@ static const ConfigSetting generalSettings[] = {
@@ -796,7 +796,7 @@ index a15dc9e..78c90c6 100644
  	ConfigSetting("EnableCheats", SETTING(g_Config, bEnableCheats), false, CfgFlag::PER_GAME | CfgFlag::REPORT),
 +	ConfigSetting("M33Rewind", SETTING(g_Config, bM33Rewind), true, CfgFlag::PER_GAME),
 +	ConfigSetting("M33PerfLog", SETTING(g_Config, bM33PerfLog), true, CfgFlag::DEFAULT),
-+	ConfigSetting("M33RewindOnL2", SETTING(g_Config, bM33RewindOnL2), true, CfgFlag::PER_GAME),
++	ConfigSetting("M33RewindButton", SETTING(g_Config, iM33RewindButton), 10, CfgFlag::DEFAULT),
 +	ConfigSetting("M33FrameGen", SETTING(g_Config, bM33FrameGen), false, CfgFlag::PER_GAME),
  	ConfigSetting("EnablePlugins", SETTING(g_Config, bEnablePlugins), true, CfgFlag::PER_GAME | CfgFlag::REPORT),
  	ConfigSetting("EnableFileHandlerPlugins", SETTING(g_Config, bEnableFileHandlerPlugins), false, CfgFlag::DEFAULT),
@@ -848,7 +848,7 @@ index a15dc9e..78c90c6 100644
  		postShaderChain->Set("PostShader1", "ColorCorrection");
  		postShaderSetting->Set("ColorCorrectionSettingCurrentValue1", 1.0f);
 diff --git a/Core/Config.h b/Core/Config.h
-index 3adb876..fe202de 100644
+index 3adb876..7404b0e 100644
 --- a/Core/Config.h
 +++ b/Core/Config.h
 @@ -253,6 +253,8 @@ struct Config : public ConfigBlock {
@@ -866,7 +866,7 @@ index 3adb876..fe202de 100644
  	bool bEnableCheats;
 +	bool bM33Rewind;  // M33: rewind on L2 (ps4/PS4Rewind.cpp)
 +	bool bM33PerfLog;  // M33: how a game runs, in ppsspp.log every 10 s (ps4/PS4Perf.cpp)
-+	bool bM33RewindOnL2;  // M33: L2 rewinds; off, L2 goes to the game as its trigger axis (ps4/PS4Pad.cpp)
++	int iM33RewindButton;  // M33: the button that rewinds (PS4Pad::Ps4Button, -1 none; L2), kept from the game
 +	bool bM33FrameGen;  // M33: frame generation, 30 -> 60 (GPU/Common/PresentationCommon.cpp)
  	bool bReloadCheats;
  	bool bEnablePlugins;
@@ -2196,10 +2196,10 @@ index 0bf44c7..7f42b61 100644
  		if (g_Config.iShowStatusFlags & (int)ShowStatusFlags::BATTERY_PERCENT) {
  			const int percentage = System_GetPropertyInt(SYSPROP_BATTERY_PERCENTAGE);
 diff --git a/UI/EmuScreen.cpp b/UI/EmuScreen.cpp
-index e1a8d56..345df47 100644
+index e1a8d56..63c5a9d 100644
 --- a/UI/EmuScreen.cpp
 +++ b/UI/EmuScreen.cpp
-@@ -60,6 +60,15 @@ using namespace std::placeholders;
+@@ -60,6 +60,16 @@ using namespace std::placeholders;
  #include "Core/MemFault.h"
  #include "Core/Reporting.h"
  #include "Core/Util/PathUtil.h"
@@ -2210,12 +2210,13 @@ index e1a8d56..345df47 100644
 +#include "ps4/PS4QuickMenu.h"
 +#include "ps4/PS4Rewind.h"
 +#include "ps4/PS4Perf.h"
++#include "ps4/PS4Controls.h"
 +#include "ps4/PS4XmbGames.h"
 +#endif
  #include "Core/System.h"
  #include "GPU/Common/PresentationCommon.h"
  #include "GPU/GPUState.h"
-@@ -102,6 +111,15 @@ using namespace std::placeholders;
+@@ -102,6 +112,15 @@ using namespace std::placeholders;
  #endif
  
  #ifndef MOBILE_DEVICE
@@ -2231,7 +2232,7 @@ index e1a8d56..345df47 100644
  static AVIDump avi;
  #endif
  
-@@ -164,6 +182,9 @@ EmuScreen::EmuScreen(const Path &filename)
+@@ -164,6 +183,9 @@ EmuScreen::EmuScreen(const Path &filename)
  	: gamePath_(filename) {
  	saveStateSlot_ = SaveState::GetCurrentSlot();
  	g_controlMapper.AddListener(this);
@@ -2241,7 +2242,7 @@ index e1a8d56..345df47 100644
  
  	_dbg_assert_(coreState == CORE_POWERDOWN);
  
-@@ -222,7 +243,6 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+@@ -222,7 +244,6 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
  	if (!bootAllowStorage(filename)) {
  		return;
  	}
@@ -2249,7 +2250,7 @@ index e1a8d56..345df47 100644
  	if (Achievements::IsBlockingExecution()) {
  		// Keep waiting.
  		return;
-@@ -318,6 +338,33 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
+@@ -318,6 +339,34 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
  	coreParam.enableSound = g_Config.bEnableSound;
  	coreParam.fileToStart = filename;
  	coreParam.mountIso.clear();
@@ -2279,11 +2280,12 @@ index e1a8d56..345df47 100644
 +			M33Fw_SetDisc("");
 +		}
 +	}
++	M33Controls_Tidy();  // (ps4/PS4Controls.cpp)
 +#endif
  	coreParam.mountRoot = g_Config.mountRoot;
  	coreParam.startBreak = !g_Config.bAutoRun;
  	coreParam.headLess = false;
-@@ -449,6 +496,9 @@ void EmuScreen::bootComplete() {
+@@ -449,6 +498,9 @@ void EmuScreen::bootComplete() {
  
  EmuScreen::~EmuScreen() {
  	g_controlMapper.RemoveListener(this);
@@ -2293,7 +2295,7 @@ index e1a8d56..345df47 100644
  
  	std::string gameID = g_paramSFO.GetValueString("DISC_ID");
  	g_Config.TimeTracker().Stop(gameID);
-@@ -548,7 +598,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
+@@ -548,7 +600,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
  	// External commands, like from the Windows UI.
  	// This happens on the main thread.
  	if (message == UIMessage::REQUEST_GAME_PAUSE && screenManager()->topScreen() == this) {
@@ -2302,7 +2304,7 @@ index e1a8d56..345df47 100644
  	} else if (message == UIMessage::REQUEST_GAME_STOP) {
  		// We will push MainScreen in update().
  		if (bootPending_) {
-@@ -677,7 +727,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
+@@ -677,7 +729,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
  				// use this as the fallback way to get into the menu.
  				// Don't do it on the first resume though, in case we launch directly into emuscreen, like from a frontend - see #18926
  				if (!equals(value, "first")) {
@@ -2311,7 +2313,7 @@ index e1a8d56..345df47 100644
  				}
  			}
  		}
-@@ -1417,6 +1467,19 @@ void EmuScreen::update() {
+@@ -1417,6 +1469,19 @@ void EmuScreen::update() {
  	resumeButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR && Memory::MemFault_MayBeResumable() ? V_VISIBLE : V_GONE);
  	resetButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR ? V_VISIBLE : V_GONE);
  	backButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR ? V_VISIBLE : V_GONE);
@@ -2331,7 +2333,7 @@ index e1a8d56..345df47 100644
  
  	if (chatButton_ && chatMenu_) {
  		if (chatMenu_->GetVisibility() != V_GONE) {
-@@ -1464,9 +1527,10 @@ void EmuScreen::update() {
+@@ -1464,9 +1529,10 @@ void EmuScreen::update() {
  
  	if (pauseTrigger_) {
  		pauseTrigger_ = false;
@@ -2343,7 +2345,7 @@ index e1a8d56..345df47 100644
  	if (!PSP_IsInited())
  		return;
  
-@@ -1715,6 +1779,10 @@ bool EmuScreen::AllowFocusMovement() const {
+@@ -1715,6 +1781,10 @@ bool EmuScreen::AllowFocusMovement() const {
  	if (chatMenu_ && chatMenu_->GetVisibility() == UI::V_VISIBLE) {
  		return true;
  	}
@@ -2354,7 +2356,7 @@ index e1a8d56..345df47 100644
  	// We have just a game controller and possibly a chat and debug button. Don't allow focus movement.
  	return false;
  }
-@@ -1735,6 +1803,14 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1735,6 +1805,14 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  	PSP_UpdateDebugStats((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::DEBUG_STATS || g_Config.bLogFrameDrops);
  	clearColor_ = 0;
  	bool blockedExecution = Achievements::IsBlockingExecution();
@@ -2369,7 +2371,7 @@ index e1a8d56..345df47 100644
  	if (!blockedExecution) {
  		// We process savestates before running the frame.
  		SaveState::Process();
-@@ -1762,7 +1838,13 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1762,7 +1840,13 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  			}
  		}
  
@@ -2383,7 +2385,7 @@ index e1a8d56..345df47 100644
  
  		// Hopefully, after running, coreState is now CORE_NEXTFRAME
  		switch (coreState) {
-@@ -1805,6 +1887,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1805,6 +1889,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  			// Run post processing and other passes.
  			gpu->PrepareCopyDisplayToOutput(displayLayoutConfig);
  			gpu->EndHostFrame();
@@ -2394,7 +2396,7 @@ index e1a8d56..345df47 100644
  
  			// The right time to run this
  			if (ScreenshotNotifyPostGameRender(draw) && skipBufferEffects) {
-@@ -1841,6 +1927,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
+@@ -1841,6 +1929,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
  }
  
  bool EmuScreen::hasVisibleUI() {
@@ -2405,7 +2407,7 @@ index e1a8d56..345df47 100644
  	// Regular but uncommon UI.
  	if (saveStatePreview_->GetVisibility() != UI::V_GONE || loadingSpinner_->GetVisibility() == UI::V_VISIBLE)
  		return true;
-@@ -1872,6 +1962,9 @@ void EmuScreen::renderUI() {
+@@ -1872,6 +1964,9 @@ void EmuScreen::renderUI() {
  	// This sets up some important states but not the viewport.
  	ctx->Begin();
  
@@ -2787,20 +2789,21 @@ index 335dee8..e9c3d81 100644
  	// All data in GameInfo including icon.texture may be zero the first time you call this
  	// but filled in later asynchronously in the background. So keep calling this,
 diff --git a/UI/GameSettingsScreen.cpp b/UI/GameSettingsScreen.cpp
-index 4df7018..572b4bf 100644
+index 4df7018..c379f30 100644
 --- a/UI/GameSettingsScreen.cpp
 +++ b/UI/GameSettingsScreen.cpp
-@@ -43,6 +43,9 @@
+@@ -43,6 +43,10 @@
  #include "Common/Data/Encoding/Utf8.h"
  #include "Common/UI/PopupScreens.h"
  #include "UI/EmuScreen.h"
 +#if PPSSPP_PLATFORM(PS4)
 +#include "ps4/PS4Lang.h"
++#include "ps4/PS4Controls.h"
 +#endif
  #include "UI/GameSettingsScreen.h"
  #include "UI/GameInfoCache.h"
  #include "UI/GamepadEmu.h"
-@@ -438,6 +441,10 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
+@@ -438,6 +442,10 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
  	}
  
  	graphicsSettings->Add(new ItemHeader(gr->T("Frame Rate Control")));
@@ -2811,18 +2814,20 @@ index 4df7018..572b4bf 100644
  	static const char *frameSkip[] = {"Off", "1", "2", "3", "4", "5", "6", "7", "8"};
  	PopupMultiChoice *frameSkipping = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iFrameSkip, gr->T("Frame Skipping"), frameSkip, 0, ARRAY_SIZE(frameSkip), I18NCat::GRAPHICS, screenManager()));
  	frameSkipping->SetChoicesUntranslated(1, (int)ARRAY_SIZE(frameSkip) - 1);
-@@ -779,6 +786,10 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
+@@ -779,6 +787,12 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
  	int deviceType = System_GetPropertyInt(SYSPROP_DEVICE_TYPE);
  
  	controlsSettings->Add(new ItemHeader(ms->T("Controls")));
 +#if PPSSPP_PLATFORM(PS4)
-+	// M33: L2 for rewind, or for the game (its trigger axis, to map in Control mapping: analog braking...)
-+	controlsSettings->Add(new CheckBox(&g_Config.bM33RewindOnL2, co->T("M33RewindOnL2", M33T("L2 rewinds (off: L2 goes to the game)"))));
++	// M33: the buttons as the DualShock 4's, and the rewind button (ps4/PS4Controls.cpp)
++	controlsSettings->Add(new Choice(co->T("M33ButtonMapping", M33T("Button mapping"))))->OnClick.Add([this](UI::EventParams &e) {
++		screenManager()->push(M33_CreateControlsScreen());
++	});
 +#endif
  	controlsSettings->Add(new Choice(co->T("Control mapping")))->OnClick.Add([this](UI::EventParams &e) {
  		screenManager()->push(new ControlMappingScreen(gamePath_));
  	});
-@@ -1368,6 +1379,10 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
+@@ -1368,6 +1382,10 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
  	systemSettings->Add(enableReportsCheckbox);
  
  	systemSettings->Add(new ItemHeader(sy->T("Emulation")));
@@ -4151,6 +4156,777 @@ index 0000000..06d0eeb
 +int ImportFromDatabase();
 +
 +}  // namespace M33Cheats
+diff --git a/ps4/PS4Controls.cpp b/ps4/PS4Controls.cpp
+new file mode 100644
+index 0000000..9ad585d
+--- /dev/null
++++ b/ps4/PS4Controls.cpp
+@@ -0,0 +1,733 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++// M33: button mapping as DualShock 4 buttons. PPSSPP's own mapping screen lists key codes and axis
++// numbers ("Button 2", "10-4034"); this one lists the PSP's buttons, its stick, fast-forward and
++// rewind, each with the PS4 button that does it drawn as on the pad. Cross on a row, then press the
++// button for it; Square clears a row, Triangle twice puts everything back. A button does one thing:
++// given to a row, it leaves the others (and rewind).
++//
++// What's shown and changed is PPSSPP's key map (controls.ini), for the first pad's buttons as
++// ps4/PS4Pad.cpp sends them; the rewind button is g_Config.iM33RewindButton (PS4Pad keeps it from
++// the game).
++
++#include <algorithm>
++#include <cmath>
++#include <string>
++#include <vector>
++
++#include "Common/Input/InputState.h"
++#include "Common/Input/KeyCodes.h"
++#include "Common/Render/DrawBuffer.h"
++#include "Common/StringUtils.h"
++#include "Common/TimeUtil.h"
++#include "Common/UI/Context.h"
++#include "Common/UI/Root.h"
++#include "Common/UI/Screen.h"
++#include "Common/UI/UIScreen.h"
++#include "Common/UI/ViewGroup.h"
++#include "Core/Config.h"
++#include "Core/HLE/sceCtrl.h"
++#include "Core/KeyMap.h"
++#include "ps4/PS4Controls.h"
++#include "ps4/PS4Lang.h"
++#include "ps4/PS4Pad.h"
++
++using namespace PS4Pad;
++
++namespace {
++
++constexpr uint32_t ACCENT = 0x9B7BFF, TEXT = 0xFFFFFF, WARN = 0xFFC870;
++
++uint32_t Col(uint32_t rgb, float a) {
++	const uint32_t r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
++	return ((uint32_t)(std::clamp(a, 0.0f, 1.0f) * 255.0f) << 24) | (b << 16) | (g << 8) | r;
++}
++
++// A PS4 button as PPSSPP sees it from the first pad (ps4/PS4Pad.cpp): a key, L2 / R2 their triggers
++InputMapping MappingOf(int button) {
++	static const InputKeyCode kKeys[PS4_BUTTON_COUNT] = {
++		NKCODE_BUTTON_2, NKCODE_BUTTON_3, NKCODE_BUTTON_4, NKCODE_BUTTON_1,
++		NKCODE_DPAD_UP, NKCODE_DPAD_DOWN, NKCODE_DPAD_LEFT, NKCODE_DPAD_RIGHT,
++		NKCODE_BUTTON_7, NKCODE_BUTTON_8, NKCODE_UNKNOWN, NKCODE_UNKNOWN,
++		NKCODE_BUTTON_THUMBL, NKCODE_BUTTON_THUMBR, NKCODE_BUTTON_10, NKCODE_BUTTON_9,
++	};
++	if (button == PS4_L2)
++		return InputMapping(DEVICE_ID_PAD_0, JOYSTICK_AXIS_LTRIGGER, 1);
++	if (button == PS4_R2)
++		return InputMapping(DEVICE_ID_PAD_0, JOYSTICK_AXIS_RTRIGGER, 1);
++	return InputMapping(DEVICE_ID_PAD_0, kKeys[button]);
++}
++
++bool IsPad(InputDeviceID device) {
++	return device >= DEVICE_ID_PAD_0 && device <= DEVICE_ID_PAD_9;
++}
++
++// The PS4 button a mapping is (any pad), or -1
++int ButtonOf(const InputMapping &m) {
++	if (!IsPad(m.deviceId))
++		return -1;
++	for (int b = 0; b < PS4_BUTTON_COUNT; b++)
++		if (MappingOf(b).keyCode == m.keyCode)
++			return b;
++	return -1;
++}
++
++// A key press on the page: the button, or -1 (L3 + R3 comes as L2's key code, NKCODE_BUTTON_L2)
++int ButtonOfKey(InputKeyCode key) {
++	for (int b = 0; b < PS4_BUTTON_COUNT; b++)
++		if (b != PS4_L2 && b != PS4_R2 && MappingOf(b).keyCode == key)
++			return b;
++	return -1;
++}
++
++enum RowKind { KIND_PSP, KIND_STICK, KIND_FASTFORWARD, KIND_REWIND };
++
++struct RowDef {
++	const char *name;
++	RowKind kind;
++	int pspKey;
++};
++
++const RowDef kRows[] = {
++	{ "Cross", KIND_PSP, CTRL_CROSS },
++	{ "Circle", KIND_PSP, CTRL_CIRCLE },
++	{ "Square", KIND_PSP, CTRL_SQUARE },
++	{ "Triangle", KIND_PSP, CTRL_TRIANGLE },
++	{ "Up", KIND_PSP, CTRL_UP },
++	{ "Down", KIND_PSP, CTRL_DOWN },
++	{ "Left", KIND_PSP, CTRL_LEFT },
++	{ "Right", KIND_PSP, CTRL_RIGHT },
++	{ "L", KIND_PSP, CTRL_LTRIGGER },
++	{ "R", KIND_PSP, CTRL_RTRIGGER },
++	{ "START", KIND_PSP, CTRL_START },
++	{ "SELECT", KIND_PSP, CTRL_SELECT },
++	{ "Analog stick", KIND_STICK, 0 },
++	{ "Fast-forward", KIND_FASTFORWARD, 0 },
++	{ "Rewind", KIND_REWIND, 0 },
++};
++constexpr int kRowCount = (int)(sizeof(kRows) / sizeof(kRows[0]));
++
++// PSP keys the page gives PS4 buttons to (a button given to one leaves the others)
++const int kManagedKeys[] = {
++	CTRL_CROSS, CTRL_CIRCLE, CTRL_SQUARE, CTRL_TRIANGLE, CTRL_UP, CTRL_DOWN, CTRL_LEFT, CTRL_RIGHT,
++	CTRL_LTRIGGER, CTRL_RTRIGGER, CTRL_START, CTRL_SELECT, VIRTKEY_FASTFORWARD, VIRTKEY_SPEED_ANALOG,
++	VIRTKEY_PAUSE,
++};
++
++// The PS4 buttons a PSP key has (single-button mappings of a pad)
++std::vector<int> ButtonsOf(int pspKey) {
++	std::vector<KeyMap::MultiInputMapping> mappings;
++	KeyMap::InputMappingsFromPspButton(pspKey, &mappings, true);
++	std::vector<int> out;
++	for (const auto &m : mappings) {
++		if (m.mappings.size() != 1)
++			continue;
++		const int b = ButtonOf(m.mappings[0]);
++		if (b >= 0 && std::find(out.begin(), out.end(), b) == out.end())
++			out.push_back(b);
++	}
++	return out;
++}
++
++// Takes a PS4 button off a PSP key (its single-button mappings, any pad)
++void TakeOff(int pspKey, int button) {
++	std::vector<KeyMap::MultiInputMapping> mappings;
++	KeyMap::InputMappingsFromPspButton(pspKey, &mappings, true);
++	for (int i = (int)mappings.size() - 1; i >= 0; i--) {
++		if (mappings[i].mappings.size() == 1 && ButtonOf(mappings[i].mappings[0]) == button)
++			KeyMap::DeleteNthMapping(pspKey, i);
++	}
++}
++
++bool RightStickIsAnalog() {
++	std::vector<KeyMap::MultiInputMapping> mappings;
++	KeyMap::InputMappingsFromPspButton(VIRTKEY_AXIS_X_MIN, &mappings, true);
++	for (const auto &m : mappings) {
++		if (m.mappings.size() == 1 && m.mappings[0].IsAxis()) {
++			int dir = 0;
++			if (m.mappings[0].Axis(&dir) == JOYSTICK_AXIS_Z)
++				return true;
++		}
++	}
++	return false;
++}
++
++// The PSP's stick (and PPSSPP's second, right-hand one) from the left or the right stick
++void SetAnalogStick(bool right) {
++	const int x = right ? JOYSTICK_AXIS_Z : JOYSTICK_AXIS_X, y = right ? JOYSTICK_AXIS_RZ : JOYSTICK_AXIS_Y;
++	const int ox = right ? JOYSTICK_AXIS_X : JOYSTICK_AXIS_Z, oy = right ? JOYSTICK_AXIS_Y : JOYSTICK_AXIS_RZ;
++	auto set = [](int key, int axis, int dir) {
++		KeyMap::SetInputMapping(key, KeyMap::MultiInputMapping(InputMapping(DEVICE_ID_PAD_0, axis, dir)), true);
++	};
++	set(VIRTKEY_AXIS_X_MIN, x, -1);
++	set(VIRTKEY_AXIS_X_MAX, x, 1);
++	set(VIRTKEY_AXIS_Y_MIN, y, 1);
++	set(VIRTKEY_AXIS_Y_MAX, y, -1);
++	set(VIRTKEY_AXIS_RIGHT_X_MIN, ox, -1);
++	set(VIRTKEY_AXIS_RIGHT_X_MAX, ox, 1);
++	set(VIRTKEY_AXIS_RIGHT_Y_MIN, oy, 1);
++	set(VIRTKEY_AXIS_RIGHT_Y_MAX, oy, -1);
++}
++
++void Saved() {
++	KeyMap::UpdateNativeMenuKeys();
++	g_Config.Save("M33Controls");
++}
++
++class M33ControlsScreen : public UIScreen {
++public:
++	M33ControlsScreen() {
++		opened_ = lastTime_ = time_now_d();
++		SetPassAll(true);
++	}
++	~M33ControlsScreen() override {
++		SetPassAll(false);
++	}
++
++	const char *tag() const override { return "M33Controls"; }
++	bool isTransparent() const override { return true; }
++
++	void CreateViews() override {
++		root_ = new UI::AnchorLayout(new UI::LayoutParams(UI::FILL_PARENT, UI::FILL_PARENT));
++	}
++
++	void update() override {
++		UIScreen::update();
++		const double now = time_now_d();
++		if (capturing_ && now - captureAt_ > 6.0) {
++			capturing_ = false;  // nothing pressed: as it was
++			UI::PlayUISound(UI::UISound::BACK);
++		}
++		if (held_ && now >= repeatAt_) {
++			Move(held_);
++			repeatAt_ = now + 0.08;
++		}
++	}
++
++	bool key(const KeyInput &key) override {
++		if (!(key.flags & (KeyInputFlags::DOWN | KeyInputFlags::UP)))
++			return false;
++		const bool down = (key.flags & KeyInputFlags::DOWN) != 0;
++		if (capturing_) {
++			// the next button pressed (not the press that began it; not L3 + R3)
++			if (down && key.keyCode != NKCODE_BUTTON_L2 && time_now_d() - captureAt_ > 0.2) {
++				const int b = ButtonOfKey(key.keyCode);
++				if (b >= 0)
++					Give(sel_, b);
++			}
++			return true;
++		}
++		int dir = 0;
++		switch (key.keyCode) {
++		case NKCODE_DPAD_UP: dir = -1; break;
++		case NKCODE_DPAD_DOWN: dir = 1; break;
++		default: break;
++		}
++		if (dir) {
++			Hold(dir, down);
++			return true;
++		}
++		if (!down)
++			return true;
++		switch (key.keyCode) {
++		case NKCODE_BUTTON_2:  // Cross
++			Activate();
++			break;
++		case NKCODE_BUTTON_4:  // Square
++			Clear(sel_);
++			break;
++		case NKCODE_BUTTON_1:  // Triangle, twice
++			if (time_now_d() - resetAsked_ < 3.0) {
++				ResetAll();
++			} else {
++				resetAsked_ = time_now_d();
++				status_ = M33T("Press Triangle again to reset everything");
++			}
++			break;
++		case NKCODE_BUTTON_3:  // Circle
++		case NKCODE_BUTTON_L2:  // L3 + R3
++		case NKCODE_ESCAPE:
++		case NKCODE_BACK:
++			if (time_now_d() - opened_ > 0.3) {
++				UI::PlayUISound(UI::UISound::BACK);
++				TriggerFinish(DR_BACK);
++			}
++			break;
++		case NKCODE_DPAD_LEFT:
++		case NKCODE_DPAD_RIGHT:
++			if (kRows[sel_].kind == KIND_STICK)
++				Activate();
++			break;
++		default:
++			break;
++		}
++		return true;
++	}
++
++	void axis(const AxisInput &axis) override {
++		if (capturing_) {
++			if (time_now_d() - captureAt_ > 0.2 && axis.value > 0.6f) {
++				if (axis.axisId == JOYSTICK_AXIS_LTRIGGER)
++					Give(sel_, PS4_L2);
++				else if (axis.axisId == JOYSTICK_AXIS_RTRIGGER)
++					Give(sel_, PS4_R2);
++			}
++			return;
++		}
++		if (axis.axisId == JOYSTICK_AXIS_Y) {
++			const int dir = axis.value < -0.6f ? -1 : (axis.value > 0.6f ? 1 : 0);
++			if (dir != stickY_) {
++				if (stickY_)
++					Hold(stickY_, false);
++				stickY_ = dir;
++				if (dir)
++					Hold(dir, true);
++			}
++		}
++	}
++
++protected:
++	void DrawForeground(UIContext &dc) override;
++
++private:
++	void Hold(int dir, bool down) {
++		if (down) {
++			held_ = dir;
++			Move(dir);
++			repeatAt_ = time_now_d() + 0.35;
++		} else if (held_ == dir) {
++			held_ = 0;
++		}
++	}
++	void Move(int dir) {
++		sel_ = (sel_ + dir + kRowCount) % kRowCount;
++		UI::PlayUISound(UI::UISound::SELECT);
++	}
++
++	void Activate() {
++		status_.clear();
++		if (kRows[sel_].kind == KIND_STICK) {
++			SetAnalogStick(!RightStickIsAnalog());
++			Saved();
++			UI::PlayUISound(UI::UISound::TOGGLE_ON);
++			return;
++		}
++		capturing_ = true;
++		captureAt_ = time_now_d();
++		UI::PlayUISound(UI::UISound::CONFIRM);
++	}
++
++	// Row r is now done by PS4 button b, and only by it; b leaves everything else
++	void Give(int r, int b) {
++		capturing_ = false;
++		status_.clear();
++		const RowDef &row = kRows[r];
++		for (int key : kManagedKeys)
++			TakeOff(key, b);
++		if (row.kind != KIND_REWIND && g_Config.iM33RewindButton == b) {
++			g_Config.iM33RewindButton = -1;
++			status_ = M33T("That button was Rewind: rewind has no button now");
++		}
++		switch (row.kind) {
++		case KIND_PSP:
++			KeyMap::SetInputMapping(row.pspKey, KeyMap::MultiInputMapping(MappingOf(b)), true);
++			break;
++		case KIND_FASTFORWARD:
++			// a trigger: as far as it's pressed (PPSSPP's analog speed); a button: on while held
++			KeyMap::SetInputMapping(VIRTKEY_FASTFORWARD, KeyMap::MultiInputMapping(), true);
++			KeyMap::SetInputMapping(VIRTKEY_SPEED_ANALOG, KeyMap::MultiInputMapping(), true);
++			KeyMap::SetInputMapping(b == PS4_L2 || b == PS4_R2 ? VIRTKEY_SPEED_ANALOG : VIRTKEY_FASTFORWARD,
++				KeyMap::MultiInputMapping(MappingOf(b)), true);
++			break;
++		case KIND_REWIND:
++			g_Config.iM33RewindButton = b;
++			break;
++		default:
++			break;
++		}
++		Saved();
++		UI::PlayUISound(UI::UISound::TOGGLE_ON);
++	}
++
++	void Clear(int r) {
++		status_.clear();
++		const RowDef &row = kRows[r];
++		switch (row.kind) {
++		case KIND_PSP:
++			for (int b : ButtonsOf(row.pspKey))
++				TakeOff(row.pspKey, b);
++			break;
++		case KIND_FASTFORWARD:
++			for (int key : { VIRTKEY_FASTFORWARD, VIRTKEY_SPEED_ANALOG })
++				for (int b : ButtonsOf(key))
++					TakeOff(key, b);
++			break;
++		case KIND_REWIND:
++			g_Config.iM33RewindButton = -1;
++			break;
++		default:
++			return;
++		}
++		Saved();
++		UI::PlayUISound(UI::UISound::TOGGLE_OFF);
++	}
++
++	void ResetAll() {
++		KeyMap::RestoreDefault();
++		M33Controls_Tidy();
++		g_Config.iM33RewindButton = PS4_L2;
++		resetAsked_ = 0.0;
++		status_ = M33T("All buttons back to the defaults");
++		Saved();
++		UI::PlayUISound(UI::UISound::CONFIRM);
++	}
++
++	std::vector<int> RowButtons(int r) const {
++		const RowDef &row = kRows[r];
++		switch (row.kind) {
++		case KIND_PSP:
++			return ButtonsOf(row.pspKey);
++		case KIND_FASTFORWARD: {
++			std::vector<int> v = ButtonsOf(VIRTKEY_FASTFORWARD);
++			for (int b : ButtonsOf(VIRTKEY_SPEED_ANALOG))
++				if (std::find(v.begin(), v.end(), b) == v.end())
++					v.push_back(b);
++			return v;
++		}
++		case KIND_REWIND:
++			if (g_Config.iM33RewindButton >= 0 && g_Config.iM33RewindButton < PS4_BUTTON_COUNT)
++				return { g_Config.iM33RewindButton };
++			return {};
++		default:
++			return {};
++		}
++	}
++
++	// --- drawing (as the quick menu's, ps4/PS4QuickMenu.cpp) --------------------------------------
++	void Quad(DrawBuffer *db, float x1, float y1, float x2, float y2, uint32_t c) {
++		db->V(x1, y1, c, u_, v_);
++		db->V(x2, y1, c, u_, v_);
++		db->V(x2, y2, c, u_, v_);
++		db->V(x1, y1, c, u_, v_);
++		db->V(x2, y2, c, u_, v_);
++		db->V(x1, y2, c, u_, v_);
++	}
++	void Gradient(DrawBuffer *db, float x1, float y1, float x2, float y2, uint32_t l, uint32_t r) {
++		db->V(x1, y1, l, u_, v_);
++		db->V(x2, y1, r, u_, v_);
++		db->V(x2, y2, r, u_, v_);
++		db->V(x1, y1, l, u_, v_);
++		db->V(x2, y2, r, u_, v_);
++		db->V(x1, y2, l, u_, v_);
++	}
++	void Tri(DrawBuffer *db, float ax, float ay, float bx, float by, float cx, float cy, uint32_t c) {
++		db->V(ax, ay, c, u_, v_);
++		db->V(bx, by, c, u_, v_);
++		db->V(cx, cy, c, u_, v_);
++	}
++	void Line(DrawBuffer *db, float x1, float y1, float x2, float y2, float t, uint32_t c) {
++		const float dx = x2 - x1, dy = y2 - y1, len = std::max(0.001f, std::sqrt(dx * dx + dy * dy));
++		const float nx = -dy / len * t * 0.5f, ny = dx / len * t * 0.5f;
++		db->V(x1 + nx, y1 + ny, c, u_, v_);
++		db->V(x2 + nx, y2 + ny, c, u_, v_);
++		db->V(x2 - nx, y2 - ny, c, u_, v_);
++		db->V(x1 + nx, y1 + ny, c, u_, v_);
++		db->V(x2 - nx, y2 - ny, c, u_, v_);
++		db->V(x1 - nx, y1 - ny, c, u_, v_);
++	}
++	void Arc(DrawBuffer *db, float cx, float cy, float r, float a0, float a1, float t, uint32_t c) {
++		const int n = 20;
++		for (int i = 0; i < n; i++) {
++			const float s = a0 + (a1 - a0) * i / n, e = a0 + (a1 - a0) * (i + 1) / n;
++			Line(db, cx + r * std::cos(s), cy + r * std::sin(s), cx + r * std::cos(e), cy + r * std::sin(e), t, c);
++		}
++	}
++	// a rounded rectangle, filled
++	void Pill(DrawBuffer *db, float x1, float y1, float x2, float y2, float rad, uint32_t c) {
++		rad = std::min(rad, std::min(x2 - x1, y2 - y1) * 0.5f);
++		Quad(db, x1 + rad, y1, x2 - rad, y2, c);
++		Quad(db, x1, y1 + rad, x1 + rad, y2 - rad, c);
++		Quad(db, x2 - rad, y1 + rad, x2, y2 - rad, c);
++		db->FillCircle(x1 + rad, y1 + rad, rad, 12, c);
++		db->FillCircle(x2 - rad, y1 + rad, rad, 12, c);
++		db->FillCircle(x1 + rad, y2 - rad, rad, 12, c);
++		db->FillCircle(x2 - rad, y2 - rad, rad, 12, c);
++	}
++	void Text(UIContext &dc, const std::string &text, float x, float y, float px, uint32_t color, int align = ALIGN_LEFT | ALIGN_TOP) {
++		dc.SetFontScale(px / fontPx_, px / fontPx_);
++		dc.DrawText(text, x, y, color, align);
++	}
++	float TextW(UIContext &dc, const std::string &text, float px) {
++		float w = 0, h = 0;
++		dc.MeasureText(dc.GetTheme().uiFont, px / fontPx_, px / fontPx_, text, &w, &h);
++		return w;
++	}
++
++	// A DualShock 4 button as on the pad, centred on (cx, cy), r its radius (half its height):
++	// the face buttons dark round keys with their symbol in its colour, the D-pad's cross with the
++	// arm lit, the shoulder buttons and OPTIONS rounded keys with their name, L3 / R3 a stick top,
++	// the touch pad its wide pad. Returns its width.
++	float Glyph(UIContext &dc, DrawBuffer *db, int b, float cx, float cy, float r, float a) {
++		const uint32_t edge = Col(0xC8CCD6, 0.9f * a), key = Col(0x1E222B, 0.97f * a), label = Col(0xE8EAF0, a);
++		const float t = std::max(2.0f, r * 0.17f);
++		switch (b) {
++		case PS4_CROSS: case PS4_CIRCLE: case PS4_SQUARE: case PS4_TRIANGLE: {
++			db->FillCircle(cx, cy, r + 1.5f, 32, edge);
++			db->FillCircle(cx, cy, r, 32, key);
++			if (b == PS4_CROSS) {
++				const float e = r * 0.42f;
++				Line(db, cx - e, cy - e, cx + e, cy + e, t, Col(0x7DB4F0, a));
++				Line(db, cx - e, cy + e, cx + e, cy - e, t, Col(0x7DB4F0, a));
++			} else if (b == PS4_CIRCLE) {
++				Arc(db, cx, cy, r * 0.48f, 0.0f, 6.2832f, t, Col(0xFF6B6B, a));
++			} else if (b == PS4_SQUARE) {
++				const float e = r * 0.42f;
++				const uint32_t pink = Col(0xE59AD8, a);
++				Line(db, cx - e, cy - e, cx + e, cy - e, t, pink);
++				Line(db, cx + e, cy - e, cx + e, cy + e, t, pink);
++				Line(db, cx + e, cy + e, cx - e, cy + e, t, pink);
++				Line(db, cx - e, cy + e, cx - e, cy - e, t, pink);
++			} else {
++				const uint32_t green = Col(0x5FD6B4, a);
++				const float e = r * 0.5f;
++				const float ax = cx, ay = cy - e, bx = cx + e * 0.95f, by = cy + e * 0.6f, qx = cx - e * 0.95f, qy = cy + e * 0.6f;
++				Line(db, ax, ay, bx, by, t, green);
++				Line(db, bx, by, qx, qy, t, green);
++				Line(db, qx, qy, ax, ay, t, green);
++			}
++			return r * 2.0f;
++		}
++		case PS4_UP: case PS4_DOWN: case PS4_LEFT: case PS4_RIGHT: {
++			const float w = r * 0.62f, l = r;
++			const uint32_t dim = Col(0x2A2F3A, 0.95f * a), lit = Col(ACCENT, a);
++			Quad(db, cx - w * 0.5f - 1.2f, cy - l - 1.2f, cx + w * 0.5f + 1.2f, cy + l + 1.2f, edge);
++			Quad(db, cx - l - 1.2f, cy - w * 0.5f - 1.2f, cx + l + 1.2f, cy + w * 0.5f + 1.2f, edge);
++			Quad(db, cx - w * 0.5f, cy - l, cx + w * 0.5f, cy + l, dim);
++			Quad(db, cx - l, cy - w * 0.5f, cx + l, cy + w * 0.5f, dim);
++			// the pressed arm lit
++			if (b == PS4_UP)
++				Quad(db, cx - w * 0.5f, cy - l, cx + w * 0.5f, cy - w * 0.5f, lit);
++			else if (b == PS4_DOWN)
++				Quad(db, cx - w * 0.5f, cy + w * 0.5f, cx + w * 0.5f, cy + l, lit);
++			else if (b == PS4_LEFT)
++				Quad(db, cx - l, cy - w * 0.5f, cx - w * 0.5f, cy + w * 0.5f, lit);
++			else
++				Quad(db, cx + w * 0.5f, cy - w * 0.5f, cx + l, cy + w * 0.5f, lit);
++			return r * 2.0f;
++		}
++		case PS4_L1: case PS4_R1: case PS4_L2: case PS4_R2: case PS4_OPTIONS: case PS4_TOUCHPAD: {
++			static const char *const kNames[PS4_BUTTON_COUNT] = { "", "", "", "", "", "", "", "", "L1", "R1", "L2", "R2", "L3", "R3", "OPTIONS", "TOUCH PAD" };
++			const char *name = kNames[b];
++			const float px = (b == PS4_OPTIONS || b == PS4_TOUCHPAD) ? r * 0.72f : r * 0.95f;
++			const float tw = TextW(dc, name, px);
++			const float w = std::max(r * 2.3f, tw + r * 1.1f) * (b == PS4_TOUCHPAD ? 1.25f : 1.0f);
++			const float h = (b == PS4_L2 || b == PS4_R2) ? r * 1.9f : r * 1.5f;
++			const float x1 = cx - w * 0.5f, y1 = cy - h * 0.5f;
++			// the triggers rounder at the top, as they are
++			Pill(db, x1 - 1.5f, y1 - 1.5f, x1 + w + 1.5f, y1 + h + 1.5f, (b == PS4_L2 || b == PS4_R2) ? h * 0.5f : h * 0.3f, edge);
++			Pill(db, x1, y1, x1 + w, y1 + h, (b == PS4_L2 || b == PS4_R2) ? h * 0.5f : h * 0.3f, key);
++			Text(dc, name, cx, cy, px, label, ALIGN_CENTER);
++			return w;
++		}
++		case PS4_L3: case PS4_R3: {
++			db->FillCircle(cx, cy, r + 1.5f, 32, edge);
++			db->FillCircle(cx, cy, r, 32, Col(0x2A2F3A, 0.97f * a));
++			Arc(db, cx, cy, r * 0.72f, 0.0f, 6.2832f, std::max(1.5f, r * 0.08f), Col(0x8A90A0, a));
++			Text(dc, b == PS4_L3 ? "L3" : "R3", cx, cy, r * 0.8f, label, ALIGN_CENTER);
++			return r * 2.0f;
++		}
++		default:
++			return 0.0f;
++		}
++	}
++	// A stick (the analog row): its top, an L or an R
++	void StickGlyph(UIContext &dc, DrawBuffer *db, bool right, float cx, float cy, float r, float a) {
++		db->FillCircle(cx, cy, r + 1.5f, 32, Col(0xC8CCD6, 0.9f * a));
++		db->FillCircle(cx, cy, r, 32, Col(0x2A2F3A, 0.97f * a));
++		Arc(db, cx, cy, r * 0.72f, 0.0f, 6.2832f, std::max(1.5f, r * 0.08f), Col(0x8A90A0, a));
++		Text(dc, right ? "R" : "L", cx, cy, r * 0.9f, Col(0xE8EAF0, a), ALIGN_CENTER);
++	}
++	// The PSP's own symbol for a row (its face buttons, the D-pad), white, before the name
++	void PspSymbol(DrawBuffer *db, int r, float cx, float cy, float s, uint32_t c) {
++		const float h = s * 0.5f, t = std::max(2.0f, s * 0.1f);
++		switch (r) {
++		case 0:
++			Line(db, cx - h * 0.7f, cy - h * 0.7f, cx + h * 0.7f, cy + h * 0.7f, t, c);
++			Line(db, cx - h * 0.7f, cy + h * 0.7f, cx + h * 0.7f, cy - h * 0.7f, t, c);
++			break;
++		case 1:
++			Arc(db, cx, cy, h * 0.75f, 0.0f, 6.2832f, t, c);
++			break;
++		case 2:
++			Line(db, cx - h * 0.7f, cy - h * 0.7f, cx + h * 0.7f, cy - h * 0.7f, t, c);
++			Line(db, cx + h * 0.7f, cy - h * 0.7f, cx + h * 0.7f, cy + h * 0.7f, t, c);
++			Line(db, cx + h * 0.7f, cy + h * 0.7f, cx - h * 0.7f, cy + h * 0.7f, t, c);
++			Line(db, cx - h * 0.7f, cy + h * 0.7f, cx - h * 0.7f, cy - h * 0.7f, t, c);
++			break;
++		case 3:
++			Line(db, cx, cy - h * 0.8f, cx + h * 0.8f, cy + h * 0.55f, t, c);
++			Line(db, cx + h * 0.8f, cy + h * 0.55f, cx - h * 0.8f, cy + h * 0.55f, t, c);
++			Line(db, cx - h * 0.8f, cy + h * 0.55f, cx, cy - h * 0.8f, t, c);
++			break;
++		case 4: Tri(db, cx, cy - h * 0.8f, cx - h * 0.7f, cy + h * 0.5f, cx + h * 0.7f, cy + h * 0.5f, c); break;
++		case 5: Tri(db, cx, cy + h * 0.8f, cx - h * 0.7f, cy - h * 0.5f, cx + h * 0.7f, cy - h * 0.5f, c); break;
++		case 6: Tri(db, cx - h * 0.8f, cy, cx + h * 0.5f, cy - h * 0.7f, cx + h * 0.5f, cy + h * 0.7f, c); break;
++		case 7: Tri(db, cx + h * 0.8f, cy, cx - h * 0.5f, cy - h * 0.7f, cx - h * 0.5f, cy + h * 0.7f, c); break;
++		default:
++			break;
++		}
++	}
++
++	int sel_ = 0;
++	bool capturing_ = false;
++	double captureAt_ = 0.0, resetAsked_ = 0.0, opened_ = 0.0, lastTime_ = 0.0, repeatAt_ = 0.0;
++	int held_ = 0, stickY_ = 0;
++	std::string status_;
++	float slide_ = 0.0f, u_ = 0.0f, v_ = 0.0f, fontPx_ = 1.0f;
++};
++
++void M33ControlsScreen::DrawForeground(UIContext &dc) {
++	const double now = time_now_d();
++	const float dt = (float)std::clamp(now - lastTime_, 0.0, 0.1);
++	lastTime_ = now;
++	slide_ += (1.0f - slide_) * (1.0f - std::exp(-16.0f * dt));
++	const Bounds &bounds = dc.GetBounds();
++	const float W = bounds.w, H = bounds.h, k = H / 1080.0f, a = slide_;
++	DrawBuffer *db = dc.Draw();
++	const AtlasImage *white = db->GetAtlas() ? db->GetAtlas()->getImage(dc.GetTheme().whiteImage) : nullptr;
++	if (!white)
++		return;
++	u_ = (white->u1 + white->u2) * 0.5f;
++	v_ = (white->v1 + white->v2) * 0.5f;
++	{
++		float w = 0, h = 0;
++		dc.MeasureText(dc.GetTheme().uiFont, 1.0f, 1.0f, "Ag", &w, &h);
++		fontPx_ = std::max(1.0f, h);
++	}
++	dc.Begin();
++	dc.SetFontStyle(dc.GetTheme().uiFont);
++
++	// the panel, as the quick menu's
++	const float panelW = std::max(980.0f * k, W * 0.5f);
++	const float x0 = -panelW * 0.25f * (1.0f - a), right = x0 + panelW;
++	Quad(db, 0, 0, W, H, Col(0, 0.45f * a));
++	Gradient(db, 0, 0, right, H, Col(0x040812, 0.95f * a), Col(0x040812, 0.80f * a));
++	Quad(db, right - 2 * k, 0, right, H, Col(ACCENT, 0.6f * a));
++
++	const float lx = x0 + 70 * k;
++	Text(dc, M33T("Button mapping"), lx, 70 * k, 44 * k, Col(TEXT, a));
++	Text(dc, M33T("PSP"), lx + 50 * k, 140 * k, 22 * k, Col(ACCENT, 0.9f * a));
++	Text(dc, M33T("PS4"), right - 110 * k, 140 * k, 22 * k, Col(ACCENT, 0.9f * a), ALIGN_RIGHT | ALIGN_TOP);
++
++	const float ROW_H = 50 * k, TOP = 180 * k;
++	const float hx0 = lx - 30 * k, hx1 = right - 40 * k;
++	for (int r = 0; r < kRowCount; r++) {
++		const float y = TOP + r * ROW_H + (r >= 12 ? 14 * k : 0.0f);  // the stick, fast-forward and rewind apart
++		const float cy = y + ROW_H * 0.42f;
++		const bool sel = r == sel_;
++		if (sel) {
++			Gradient(db, hx0, y - 2 * k, hx1, y + ROW_H - 6 * k, Col(ACCENT, 0.55f * a), Col(ACCENT, 0.12f * a));
++			Quad(db, hx0, y - 2 * k, hx0 + 4 * k, y + ROW_H - 6 * k, Col(0xFFFFFF, 0.9f * a));
++		}
++		const float alpha = a * (sel ? 1.0f : 0.82f);
++		PspSymbol(db, r, lx + 14 * k, cy, 26 * k, Col(TEXT, alpha));
++		Text(dc, M33T(kRows[r].name), lx + 50 * k, cy, 28 * k, Col(TEXT, alpha), ALIGN_LEFT | ALIGN_VCENTER);
++
++		float gx = hx1 - 24 * k;
++		if (sel && capturing_) {
++			const int left = std::max(0, 6 - (int)(now - captureAt_));
++			const float pulse = 0.6f + 0.4f * std::sin((float)now * 6.0f);
++			Text(dc, StringFromFormat(M33T("Press a button (%d)"), left), gx, cy, 26 * k, Col(WARN, a * pulse), ALIGN_RIGHT | ALIGN_VCENTER);
++			continue;
++		}
++		if (kRows[r].kind == KIND_STICK) {
++			const bool rightStick = RightStickIsAnalog();
++			const std::string name = M33T(rightStick ? "Right stick" : "Left stick");
++			StickGlyph(dc, db, rightStick, gx - 17 * k, cy, 17 * k, alpha);
++			Text(dc, name, gx - 46 * k, cy, 24 * k, Col(TEXT, 0.85f * alpha), ALIGN_RIGHT | ALIGN_VCENTER);
++			continue;
++		}
++		const std::vector<int> buttons = RowButtons(r);
++		if (buttons.empty()) {
++			Text(dc, M33T("Not set"), gx, cy, 24 * k, Col(TEXT, 0.45f * alpha), ALIGN_RIGHT | ALIGN_VCENTER);
++			continue;
++		}
++		// right to left
++		for (int i = (int)buttons.size() - 1; i >= 0; i--) {
++			const float gr = 17 * k;
++			float w = 0.0f;
++			{
++				// measure first: its width decides where it goes
++				const int b = buttons[i];
++				const bool wide = b == PS4_L1 || b == PS4_R1 || b == PS4_L2 || b == PS4_R2 || b == PS4_OPTIONS || b == PS4_TOUCHPAD;
++				w = wide ? 0.0f : gr * 2.0f;
++				if (wide) {
++					static const char *const kNames[PS4_BUTTON_COUNT] = { "", "", "", "", "", "", "", "", "L1", "R1", "L2", "R2", "L3", "R3", "OPTIONS", "TOUCH PAD" };
++					const float px = (b == PS4_OPTIONS || b == PS4_TOUCHPAD) ? gr * 0.72f : gr * 0.95f;
++					w = std::max(gr * 2.3f, TextW(dc, kNames[b], px) + gr * 1.1f) * (b == PS4_TOUCHPAD ? 1.25f : 1.0f);
++				}
++			}
++			Glyph(dc, db, buttons[i], gx - w * 0.5f, cy, gr, alpha);
++			gx -= w + 12 * k;
++		}
++	}
++
++	if (!status_.empty())
++		Text(dc, status_, lx, H - 140 * k, 24 * k, Col(WARN, a));
++
++	// the buttons
++	{
++		float bx = x0 + 70 * k;
++		const float by = H - 80 * k;
++		auto label = [&](const char *text) {
++			Text(dc, text, bx, by, 24 * k, Col(TEXT, 0.85f * a), ALIGN_LEFT | ALIGN_VCENTER);
++			bx += TextW(dc, text, 24 * k) + 34 * k;
++		};
++		const float gr = 16 * k;
++		Glyph(dc, db, PS4_CROSS, bx + gr, by, gr, a);
++		bx += 2 * gr + 10 * k;
++		label(kRows[sel_].kind == KIND_STICK ? M33T("Change") : M33T("Bind"));
++		Glyph(dc, db, PS4_SQUARE, bx + gr, by, gr, a);
++		bx += 2 * gr + 10 * k;
++		label(M33T("Clear"));
++		Glyph(dc, db, PS4_TRIANGLE, bx + gr, by, gr, a);
++		bx += 2 * gr + 10 * k;
++		label(M33T("Reset all"));
++		Glyph(dc, db, PS4_CIRCLE, bx + gr, by, gr, a);
++		bx += 2 * gr + 10 * k;
++		label(M33T("Back"));
++	}
++	dc.SetFontScale(1.0f, 1.0f);
++	dc.Flush();
++}
++
++}  // namespace
++
++UIScreen *M33_CreateControlsScreen() {
++	return new M33ControlsScreen();
++}
++
++void M33Controls_Tidy() {
++	// L2's trigger pausing: PPSSPP's default pad map has it (and keeps L2's key for the pause, which
++	// is how L3 + R3 opens the menu here: that one stays)
++	TakeOff(VIRTKEY_PAUSE, PS4_L2);
++	// a rewind button that the page could have left as something else too
++	const int rb = g_Config.iM33RewindButton;
++	if (rb >= 0 && rb < PS4_BUTTON_COUNT && g_Config.bM33Rewind) {
++		for (int key : kManagedKeys)
++			if (key != VIRTKEY_PAUSE)
++				TakeOff(key, rb);
++	}
++}
+diff --git a/ps4/PS4Controls.h b/ps4/PS4Controls.h
+new file mode 100644
+index 0000000..c14d32d
+--- /dev/null
++++ b/ps4/PS4Controls.h
+@@ -0,0 +1,26 @@
++// Copyright (c) 2026- PPSSPP Project.
++
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, version 2.0 or later versions.
++
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License 2.0 for more details.
++
++// A copy of the GPL 2.0 should have been included with the program.
++// If not, see http://www.gnu.org/licenses/
++
++#pragma once
++
++class UIScreen;
++
++// M33: the controls as DualShock 4 buttons (ps4/PS4Controls.cpp): each PSP button, the stick,
++// fast-forward and rewind with the PS4 button that does it, drawn as on the pad. Cross and press a
++// button to change one. From Settings > Controls and the quick menu.
++UIScreen *M33_CreateControlsScreen();
++
++// Mappings M33 doesn't want: the L2 trigger pausing (PPSSPP's default pad map; the menu is L3 + R3
++// here, and L2 is a button for the game when it isn't rewind's). At every game start.
++void M33Controls_Tidy();
 diff --git a/ps4/PS4Keyboard.cpp b/ps4/PS4Keyboard.cpp
 new file mode 100644
 index 0000000..220e547
@@ -4392,10 +5168,10 @@ index 0000000..4cd600c
 +}  // namespace PS4Keyboard
 diff --git a/ps4/PS4Lang.cpp b/ps4/PS4Lang.cpp
 new file mode 100644
-index 0000000..0cf85aa
+index 0000000..0e04229
 --- /dev/null
 +++ b/ps4/PS4Lang.cpp
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,119 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4467,7 +5243,29 @@ index 0000000..0cf85aa
 +	{ "Off: games start straight away, without the firmware", { "Desactivado: los juegos se inician directamente, sin el firmware", "Désactivé : les jeux démarrent directement, sans le firmware", "Aus: Spiele starten sofort, ohne die Firmware", "Disattivato: i giochi partono subito, senza il firmware", "Desligado: os jogos iniciam direto, sem o firmware", "Uit: spellen starten meteen, zonder de firmware", "Wył.: gry uruchamiają się od razu, bez firmware", "Kapalı: oyunlar doğrudan, yazılım olmadan başlar", "Выкл.: игры запускаются сразу, без прошивки", "オフ：ファームウェアを通さずにすぐ起動", "关闭：不经过固件，直接启动游戏", "關閉：不經過韌體，直接啟動遊戲", "끄기: 펌웨어 없이 게임을 바로 시작" } },
 +	{ "Refresh", { "Actualizar", "Actualiser", "Aktualisieren", "Aggiorna", "Atualizar", "Vernieuwen", "Odśwież", "Yenile", "Обновить", "更新", "刷新", "重新整理", "새로 고침" } },
 +	{ "Performance log (ppsspp.log, every 10 s)", { "Registro de rendimiento (ppsspp.log, cada 10 s)", "Journal des performances (ppsspp.log, toutes les 10 s)", "Leistungsprotokoll (ppsspp.log, alle 10 s)", "Registro prestazioni (ppsspp.log, ogni 10 s)", "Registro de desempenho (ppsspp.log, a cada 10 s)", "Prestatielogboek (ppsspp.log, elke 10 s)", "Dziennik wydajności (ppsspp.log, co 10 s)", "Performans günlüğü (ppsspp.log, 10 sn'de bir)", "Журнал производительности (ppsspp.log, каждые 10 с)", "パフォーマンスログ (ppsspp.log、10秒ごと)", "性能日志（ppsspp.log，每 10 秒）", "效能記錄（ppsspp.log，每 10 秒）", "성능 로그 (ppsspp.log, 10초마다)" } },
-+	{ "L2 rewinds (off: L2 goes to the game)", { "L2 rebobina (desactivado: L2 va al juego)", "L2 rembobine (désactivé : L2 va au jeu)", "L2 spult zurück (aus: L2 geht an das Spiel)", "L2 riavvolge (disattivato: L2 va al gioco)", "L2 retrocede (desligado: L2 vai para o jogo)", "L2 spoelt terug (uit: L2 gaat naar het spel)", "L2 przewija (wył.: L2 trafia do gry)", "L2 geri sarar (kapalı: L2 oyuna gider)", "L2 — перемотка (выкл.: L2 передаётся игре)", "L2で巻き戻し (オフ：L2をゲームに送る)", "L2 倒带（关闭：L2 交给游戏）", "L2 倒帶（關閉：L2 交給遊戲）", "L2로 되감기 (끄기: L2는 게임으로)" } },
++	{ "Controls", { "Controles", "Commandes", "Steuerung", "Comandi", "Controles", "Besturing", "Sterowanie", "Kontroller", "Управление", "操作設定", "按键设置", "按鍵設定", "조작 설정" } },
++	{ "Button mapping", { "Asignar botones", "Attribution des boutons", "Tastenbelegung", "Assegnazione tasti", "Mapeamento de botões", "Knoppen toewijzen", "Przypisanie przycisków", "Tuş atama", "Назначение кнопок", "ボタン割り当て", "按键映射", "按鍵對應", "버튼 할당" } },
++	{ "Rewind", { "Rebobinar", "Rembobiner", "Zurückspulen", "Riavvolgi", "Retroceder", "Terugspoelen", "Przewijanie", "Geri sar", "Перемотка назад", "巻き戻し", "倒带", "倒帶", "되감기" } },
++	{ "Cross", { "Equis", "Croix", "Kreuz", "Croce", "Xis", "Kruis", "Krzyżyk", "Çarpı", "Крестик", "バツ", "叉", "叉", "엑스" } },
++	{ "Circle", { "Círculo", "Rond", "Kreis", "Cerchio", "Círculo", "Cirkel", "Kółko", "Daire", "Кружок", "マル", "圆圈", "圓圈", "동그라미" } },
++	{ "Square", { "Cuadrado", "Carré", "Quadrat", "Quadrato", "Quadrado", "Vierkant", "Kwadrat", "Kare", "Квадрат", "シカク", "方块", "方塊", "네모" } },
++	{ "Triangle", { "Triángulo", "Triangle", "Dreieck", "Triangolo", "Triângulo", "Driehoek", "Trójkąt", "Üçgen", "Треугольник", "サンカク", "三角", "三角", "세모" } },
++	{ "Up", { "Arriba", "Haut", "Oben", "Su", "Cima", "Omhoog", "Góra", "Yukarı", "Вверх", "上", "上", "上", "위" } },
++	{ "Down", { "Abajo", "Bas", "Unten", "Giù", "Baixo", "Omlaag", "Dół", "Aşağı", "Вниз", "下", "下", "下", "아래" } },
++	{ "Left", { "Izquierda", "Gauche", "Links", "Sinistra", "Esquerda", "Links", "Lewo", "Sol", "Влево", "左", "左", "左", "왼쪽" } },
++	{ "Right", { "Derecha", "Droite", "Rechts", "Destra", "Direita", "Rechts", "Prawo", "Sağ", "Вправо", "右", "右", "右", "오른쪽" } },
++	{ "Analog stick", { "Stick analógico", "Stick analogique", "Analogstick", "Levetta analogica", "Analógico", "Analoge stick", "Gałka analogowa", "Analog çubuk", "Аналоговый стик", "アナログスティック", "摇杆", "類比搖桿", "아날로그 스틱" } },
++	{ "Fast-forward", { "Avance rápido", "Avance rapide", "Vorspulen", "Avanti veloce", "Avanço rápido", "Vooruitspoelen", "Przyspieszenie", "İleri sar", "Ускорение", "早送り", "快进", "快轉", "빨리 감기" } },
++	{ "Left stick", { "Stick izquierdo", "Stick gauche", "Linker Stick", "Levetta sinistra", "Analógico esquerdo", "Linkerstick", "Lewa gałka", "Sol çubuk", "Левый стик", "左スティック", "左摇杆", "左搖桿", "왼쪽 스틱" } },
++	{ "Right stick", { "Stick derecho", "Stick droit", "Rechter Stick", "Levetta destra", "Analógico direito", "Rechterstick", "Prawa gałka", "Sağ çubuk", "Правый стик", "右スティック", "右摇杆", "右搖桿", "오른쪽 스틱" } },
++	{ "Not set", { "Sin asignar", "Non attribué", "Nicht belegt", "Non assegnato", "Não definido", "Niet ingesteld", "Nie przypisano", "Atanmadı", "Не назначено", "未設定", "未设置", "未設定", "설정 안 됨" } },
++	{ "Press a button (%d)", { "Pulsa un botón (%d)", "Appuie sur un bouton (%d)", "Drück eine Taste (%d)", "Premi un tasto (%d)", "Pressione um botão (%d)", "Druk op een knop (%d)", "Naciśnij przycisk (%d)", "Bir tuşa bas (%d)", "Нажмите кнопку (%d)", "ボタンを押してください (%d)", "请按一个按钮 (%d)", "請按一個按鈕 (%d)", "버튼을 누르세요 (%d)" } },
++	{ "Bind", { "Asignar", "Attribuer", "Belegen", "Assegna", "Definir", "Toewijzen", "Przypisz", "Ata", "Назначить", "割り当て", "设置", "設定", "할당" } },
++	{ "Clear", { "Quitar", "Effacer", "Entfernen", "Rimuovi", "Limpar", "Wissen", "Wyczyść", "Temizle", "Очистить", "解除", "清除", "清除", "지우기" } },
++	{ "Reset all", { "Restablecer todo", "Tout réinitialiser", "Alles zurücksetzen", "Ripristina tutto", "Restaurar tudo", "Alles herstellen", "Przywróć wszystko", "Tümünü sıfırla", "Сбросить всё", "すべて初期化", "全部重置", "全部重設", "모두 초기화" } },
++	{ "Press Triangle again to reset everything", { "Pulsa Triángulo otra vez para restablecer todo", "Appuie encore sur Triangle pour tout réinitialiser", "Drück noch einmal Dreieck, um alles zurückzusetzen", "Premi di nuovo Triangolo per ripristinare tutto", "Pressione Triângulo de novo para restaurar tudo", "Druk nogmaals op Driehoek om alles te herstellen", "Naciśnij ponownie Trójkąt, aby przywrócić wszystko", "Her şeyi sıfırlamak için tekrar Üçgen'e bas", "Нажмите «Треугольник» ещё раз, чтобы сбросить всё", "もう一度サンカクを押すとすべて初期化します", "再按一次三角键全部重置", "再按一次三角鍵全部重設", "모두 초기화하려면 세모를 한 번 더 누르세요" } },
++	{ "All buttons back to the defaults", { "Todos los botones restablecidos", "Tous les boutons sont réinitialisés", "Alle Tasten zurückgesetzt", "Tutti i tasti ripristinati", "Todos os botões restaurados", "Alle knoppen hersteld", "Przywrócono domyślne przyciski", "Tüm tuşlar varsayılana döndü", "Все кнопки сброшены", "すべてのボタンを初期設定に戻しました", "所有按键已恢复默认", "所有按鍵已恢復預設", "모든 버튼을 기본값으로 되돌렸습니다" } },
++	{ "That button was Rewind: rewind has no button now", { "Ese botón era Rebobinar: rebobinar ya no tiene botón", "Ce bouton servait à rembobiner : le rembobinage n'a plus de bouton", "Diese Taste war Zurückspulen: Zurückspulen hat jetzt keine Taste", "Quel tasto era Riavvolgi: ora il riavvolgimento non ha un tasto", "Esse botão era Retroceder: retroceder ficou sem botão", "Die knop was Terugspoelen: terugspoelen heeft nu geen knop", "Ten przycisk był przewijaniem: przewijanie nie ma teraz przycisku", "O tuş Geri sar idi: geri sarmanın artık tuşu yok", "Это была кнопка перемотки: теперь у перемотки нет кнопки", "そのボタンは巻き戻しでした：巻き戻しのボタンはなくなりました", "该按键原为倒带：倒带现在没有按键", "該按鍵原為倒帶：倒帶現在沒有按鍵", "그 버튼은 되감기였습니다: 이제 되감기 버튼이 없습니다" } },
 +};
 +
 +int CurrentLang() {
@@ -4942,10 +5740,10 @@ index 0000000..3a4e0e3
 +}
 diff --git a/ps4/PS4Pad.cpp b/ps4/PS4Pad.cpp
 new file mode 100644
-index 0000000..1a1041e
+index 0000000..aaaca5f
 --- /dev/null
 +++ b/ps4/PS4Pad.cpp
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,308 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4967,8 +5765,9 @@ index 0000000..1a1041e
 +//   Cross/Circle/Square/Triangle = PSP buttons, D-pad, left stick = PSP stick, L1/R1 = L/R,
 +//   OPTIONS = START, touchpad click = SELECT, L2 (held) = rewind, R2 = fast-forward (analog),
 +//   L3 + R3 together = PPSSPP's in-game menu; right stick, L3, R3: free to map in Settings > Controls.
-+// L2 goes to the game instead (its trigger axis, triggerL+ in the mapping) when Settings > Controls
-+// > "L2 rewinds" is off, or rewind is off for the game (it was always rewind's, mapped or not).
++// The rewind button is any of them (Settings > Controls > Button mapping, ps4/PS4Controls.cpp; L2
++// unless changed): kept from the game while rewind is on. L2 and R2 reach PPSSPP as their trigger
++// axes (triggerL+ / triggerR+), the rest as keys.
 +
 +#include <orbis/Pad.h>
 +#include <orbis/UserService.h>
@@ -5039,7 +5838,14 @@ index 0000000..1a1041e
 +std::mutex g_lock;
 +int g_rescanCountdown = 0;
 +std::atomic<int64_t> g_vibrateUntilMs{ 0 };
-+std::atomic<uint32_t> g_rewindPads{ 0 };  // a bit per pad holding L2
++std::atomic<uint32_t> g_rewindPads{ 0 };  // a bit per pad holding the rewind button
++std::atomic<bool> g_passAll{ false };
++const uint32_t kBits[PS4_BUTTON_COUNT] = {
++	ORBIS_PAD_BUTTON_CROSS, ORBIS_PAD_BUTTON_CIRCLE, ORBIS_PAD_BUTTON_SQUARE, ORBIS_PAD_BUTTON_TRIANGLE,
++	ORBIS_PAD_BUTTON_UP, ORBIS_PAD_BUTTON_DOWN, ORBIS_PAD_BUTTON_LEFT, ORBIS_PAD_BUTTON_RIGHT,
++	ORBIS_PAD_BUTTON_L1, ORBIS_PAD_BUTTON_R1, ORBIS_PAD_BUTTON_L2, ORBIS_PAD_BUTTON_R2,
++	ORBIS_PAD_BUTTON_L3, ORBIS_PAD_BUTTON_R3, ORBIS_PAD_BUTTON_OPTIONS, ORBIS_PAD_BUTTON_TOUCH_PAD,
++};
 +bool g_vibrating = false;
 +
 +int64_t NowMs() {
@@ -5140,13 +5946,27 @@ index 0000000..1a1041e
 +		return;
 +	}
 +	const InputDeviceID device = DeviceFor(slot);
-+	const uint32_t changed = data.buttons ^ pad.buttons;
++	// the rewind button: rewind's, not the game's (L2 / R2 by their trigger too)
++	const int rewindButton = g_Config.bM33Rewind && !g_passAll ? g_Config.iM33RewindButton : -1;
++	const bool rewindTrigger = rewindButton == PS4_L2 || rewindButton == PS4_R2;
++	const uint32_t rewindBit = rewindButton >= 0 && rewindButton < PS4_BUTTON_COUNT ? kBits[rewindButton] : 0;
++	bool rewind = rewindBit && (data.buttons & rewindBit);
++	if (rewindButton == PS4_L2)
++		rewind = rewind || data.analogButtons.l2 > 64;
++	if (rewindButton == PS4_R2)
++		rewind = rewind || data.analogButtons.r2 > 64;
++	if (rewind)
++		g_rewindPads |= 1u << slot;
++	else
++		g_rewindPads &= ~(1u << slot);
++	const uint32_t buttons = data.buttons & ~(rewindTrigger ? 0u : rewindBit);
++	const uint32_t changed = buttons ^ pad.buttons;
 +	if (changed) {
 +		for (const ButtonMap &b : kButtons) {
 +			if (changed & b.bit)
-+				NativeKey(KeyInput(device, b.key, (data.buttons & b.bit) ? KeyInputFlags::DOWN : KeyInputFlags::UP));
++				NativeKey(KeyInput(device, b.key, (buttons & b.bit) ? KeyInputFlags::DOWN : KeyInputFlags::UP));
 +		}
-+		pad.buttons = data.buttons;
++		pad.buttons = buttons;
 +	}
 +	const bool combo = (data.buttons & kMenuCombo) == kMenuCombo;
 +	if (combo != pad.menuCombo) {
@@ -5154,17 +5974,10 @@ index 0000000..1a1041e
 +		NativeKey(KeyInput(device, kMenuKey, combo ? KeyInputFlags::DOWN : KeyInputFlags::UP));
 +	}
 +
-+	// L2: rewind's, or the game's (its axis, for mapping like any other)
-+	const bool l2Rewinds = g_Config.bM33Rewind && g_Config.bM33RewindOnL2;
 +	const float values[AX_COUNT] = {
 +		Stick(data.leftStick.x), Stick(data.leftStick.y), Stick(data.rightStick.x), Stick(data.rightStick.y),
-+		l2Rewinds ? 0.0f : Trigger(data.analogButtons.l2), Trigger(data.analogButtons.r2),
++		rewindButton == PS4_L2 ? 0.0f : Trigger(data.analogButtons.l2), rewindButton == PS4_R2 ? 0.0f : Trigger(data.analogButtons.r2),
 +	};
-+	const bool rewind = l2Rewinds && ((data.buttons & ORBIS_PAD_BUTTON_L2) || data.analogButtons.l2 > 64);
-+	if (rewind)
-+		g_rewindPads |= 1u << slot;
-+	else
-+		g_rewindPads &= ~(1u << slot);
 +	AxisInput axes[AX_COUNT];
 +	int count = 0;
 +	for (int a = 0; a < AX_COUNT; a++) {
@@ -5234,13 +6047,17 @@ index 0000000..1a1041e
 +	return g_rewindPads.load() != 0;
 +}
 +
++void SetPassAll(bool on) {
++	g_passAll = on;
++}
++
 +}  // namespace PS4Pad
 diff --git a/ps4/PS4Pad.h b/ps4/PS4Pad.h
 new file mode 100644
-index 0000000..2f80279
+index 0000000..51007a5
 --- /dev/null
 +++ b/ps4/PS4Pad.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,40 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -5268,8 +6085,17 @@ index 0000000..2f80279
 +void Shutdown();
 +// Rumble on the first pad, for System_Vibrate.
 +void Vibrate(int lengthMs);
-+// L2 held on any pad: rewind (ps4/PS4Rewind.cpp), not a PPSSPP key.
++// The rewind button (Settings > Controls > Button mapping; L2 unless changed) held on any pad:
++// rewind (ps4/PS4Rewind.cpp). That button doesn't reach the game.
 +bool RewindHeld();
++// Everything reaches PPSSPP, the rewind button too (the button mapping page, while it's open).
++void SetPassAll(bool on);
++
++// The DualShock 4's buttons, as the button mapping page and g_Config.iM33RewindButton number them
++enum Ps4Button {
++	PS4_CROSS, PS4_CIRCLE, PS4_SQUARE, PS4_TRIANGLE, PS4_UP, PS4_DOWN, PS4_LEFT, PS4_RIGHT,
++	PS4_L1, PS4_R1, PS4_L2, PS4_R2, PS4_L3, PS4_R3, PS4_OPTIONS, PS4_TOUCHPAD, PS4_BUTTON_COUNT,
++};
 +
 +}  // namespace PS4Pad
 diff --git a/ps4/PS4Perf.cpp b/ps4/PS4Perf.cpp
@@ -5420,10 +6246,10 @@ index 0000000..a02b449
 +void M33Perf_Reset();
 diff --git a/ps4/PS4QuickMenu.cpp b/ps4/PS4QuickMenu.cpp
 new file mode 100644
-index 0000000..9a67f77
+index 0000000..fb099be
 --- /dev/null
 +++ b/ps4/PS4QuickMenu.cpp
-@@ -0,0 +1,821 @@
+@@ -0,0 +1,836 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -5481,6 +6307,7 @@ index 0000000..9a67f77
 +#include "UI/GameSettingsScreen.h"
 +#include "UI/PauseScreen.h"
 +#include "ps4/PS4Cheats.h"
++#include "ps4/PS4Controls.h"
 +#include "ps4/PS4Lang.h"
 +#include "ps4/PS4QuickMenu.h"
 +
@@ -5501,6 +6328,7 @@ index 0000000..9a67f77
 +	ROW_REWIND,
 +	ROW_FRAMEGEN,
 +	ROW_CHEATS,
++	ROW_CONTROLS,
 +	ROW_RESOLUTION,
 +	ROW_VOLUME,
 +	ROW_COUNTER,
@@ -5512,7 +6340,7 @@ index 0000000..9a67f77
 +};
 +
 +const char *const kRowLabels[ROW_COUNT] = {
-+	"Resume", "Save State", "Load State", "Rewind (L2)", "Frame Generation", "Cheats", "Resolution", "Game Volume", "FPS Counter",
++	"Resume", "Save State", "Load State", "Rewind", "Frame Generation", "Cheats", "Controls", "Resolution", "Game Volume", "FPS Counter",
 +	"Settings", "Display & Effects", "Restart Game", "Exit to M33",
 +};
 +
@@ -5728,6 +6556,12 @@ index 0000000..9a67f77
 +		case ROW_REWIND:
 +			g_Config.bM33Rewind = !g_Config.bM33Rewind;
 +			UI::PlayUISound(g_Config.bM33Rewind ? UI::UISound::TOGGLE_ON : UI::UISound::TOGGLE_OFF);
++			break;
++		case ROW_CONTROLS:
++			if (activate) {
++				UI::PlayUISound(UI::UISound::CONFIRM);
++				screenManager()->push(M33_CreateControlsScreen());
++			}
 +			break;
 +		case ROW_CHEATS:
 +			if (activate) {
@@ -5994,6 +6828,13 @@ index 0000000..9a67f77
 +			Line(db, cx + h * std::cos(a1), cy + h * std::sin(a1), cx + h * std::cos(a2), cy + h * std::sin(a2), t, c);
 +		}
 +		break;
++	case ROW_CONTROLS:  // a pad
++		RectLine(db, cx - h, cy - h * 0.45f, cx + h, cy + h * 0.45f, t, c);
++		Line(db, cx - h * 0.6f, cy, cx - h * 0.2f, cy, t, c);
++		Line(db, cx - h * 0.4f, cy - h * 0.2f, cx - h * 0.4f, cy + h * 0.2f, t, c);
++		db->FillCircle(cx + h * 0.35f, cy - h * 0.1f, t * 0.8f, 8, c);
++		db->FillCircle(cx + h * 0.6f, cy + h * 0.12f, t * 0.8f, 8, c);
++		break;
 +	case ROW_RESOLUTION:  // a screen
 +	case ROW_DISPLAY:
 +		RectLine(db, cx - h, cy - h * 0.65f, cx + h, cy + h * 0.5f, t, c);
@@ -6121,7 +6962,7 @@ index 0000000..9a67f77
 +	Text(dc, name, lx, 140 * k, 30 * k, Col(ACCENT, a));
 +
 +	// rows: a gap before Restart and Exit
-+	const float ROW_H = 60 * k, TOP = 205 * k, GAP = 22 * k;
++	const float ROW_H = 54 * k, TOP = 195 * k, GAP = 22 * k;
 +	auto rowY = [&](float r) { return TOP + r * ROW_H + (r >= ROW_RESTART ? GAP : 0.0f); };
 +	const float hy = rowY(std::clamp(highlight_, 0.0f, (float)ROW_COUNT - 1));
 +	const float hx0 = lx - 30 * k, hx1 = right - 40 * k;
@@ -8822,10 +9663,10 @@ index 0000000..1ba337d
 +bool M33Fw_TakeDirect(const std::string &disc);
 diff --git a/ps4/ps4.cmake b/ps4/ps4.cmake
 new file mode 100644
-index 0000000..80b4d64
+index 0000000..07e407e
 --- /dev/null
 +++ b/ps4/ps4.cmake
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,59 @@
 +# M33: PPSSPP's PS4 frontend, included from the top CMakeLists.txt once ${TargetBin} exists.
 +# Built with M33's toolchain (toolchain/ps4-m33.cmake, and ps4-love-style.cmake as the project
 +# include: PS4_RUNTIME_SOURCES, ps4_link_mesa, ps4_add_eboot).
@@ -8847,6 +9688,7 @@ index 0000000..80b4d64
 +	ps4/PS4QuickMenu.h
 +	ps4/PS4Rewind.cpp
 +	ps4/PS4Perf.cpp
++	ps4/PS4Controls.cpp
 +	ps4/PS4Rewind.h
 +	ps4/PS4Pad.h
 +	ps4/PS4StartupClip.cpp
