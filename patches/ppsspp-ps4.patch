@@ -4158,10 +4158,10 @@ index 0000000..06d0eeb
 +}  // namespace M33Cheats
 diff --git a/ps4/PS4Controls.cpp b/ps4/PS4Controls.cpp
 new file mode 100644
-index 0000000..51d36fb
+index 0000000..2e396cd
 --- /dev/null
 +++ b/ps4/PS4Controls.cpp
-@@ -0,0 +1,781 @@
+@@ -0,0 +1,843 @@
 +// Copyright (c) 2026- PPSSPP Project.
 +
 +// This program is free software: you can redistribute it and/or modify
@@ -4219,7 +4219,12 @@ index 0000000..51d36fb
 +	return ((uint32_t)(std::clamp(a, 0.0f, 1.0f) * 255.0f) << 24) | (b << 16) | (g << 8) | r;
 +}
 +
-+// A PS4 button as PPSSPP sees it from the first pad (ps4/PS4Pad.cpp): a key, L2 / R2 their triggers
++// The sticks' directions, as more inputs a PSP button can have (the right stick as the D-pad, for a
++// game's camera): after the pad's buttons. Not for rewind (ps4/PS4Pad.cpp reads it from the buttons).
++enum { LS_UP = PS4_BUTTON_COUNT, LS_DOWN, LS_LEFT, LS_RIGHT, RS_UP, RS_DOWN, RS_LEFT, RS_RIGHT, INPUT_COUNT };
++
++// A PS4 button as PPSSPP sees it from the first pad (ps4/PS4Pad.cpp): a key, L2 / R2 their triggers,
++// a stick direction its axis (up and left negative)
 +InputMapping MappingOf(int button) {
 +	static const InputKeyCode kKeys[PS4_BUTTON_COUNT] = {
 +		NKCODE_BUTTON_2, NKCODE_BUTTON_3, NKCODE_BUTTON_4, NKCODE_BUTTON_1,
@@ -4231,6 +4236,12 @@ index 0000000..51d36fb
 +		return InputMapping(DEVICE_ID_PAD_0, JOYSTICK_AXIS_LTRIGGER, 1);
 +	if (button == PS4_R2)
 +		return InputMapping(DEVICE_ID_PAD_0, JOYSTICK_AXIS_RTRIGGER, 1);
++	if (button >= LS_UP) {
++		const int d = (button - LS_UP) % 4;
++		const bool right = button >= RS_UP;
++		const int axis = d < 2 ? (right ? JOYSTICK_AXIS_RZ : JOYSTICK_AXIS_Y) : (right ? JOYSTICK_AXIS_Z : JOYSTICK_AXIS_X);
++		return InputMapping(DEVICE_ID_PAD_0, axis, (d == 0 || d == 2) ? -1 : 1);
++	}
 +	return InputMapping(DEVICE_ID_PAD_0, kKeys[button]);
 +}
 +
@@ -4242,7 +4253,7 @@ index 0000000..51d36fb
 +int ButtonOf(const InputMapping &m) {
 +	if (!IsPad(m.deviceId))
 +		return -1;
-+	for (int b = 0; b < PS4_BUTTON_COUNT; b++)
++	for (int b = 0; b < INPUT_COUNT; b++)
 +		if (MappingOf(b).keyCode == m.keyCode)
 +			return b;
 +	return -1;
@@ -4254,6 +4265,18 @@ index 0000000..51d36fb
 +		if (b != PS4_L2 && b != PS4_R2 && MappingOf(b).keyCode == key)
 +			return b;
 +	return -1;
++}
++
++// A stick pushed on the page: its direction, or -1
++int StickInputOf(int axis, float value) {
++	const int d = value < 0.0f ? 0 : 1;
++	switch (axis) {
++	case JOYSTICK_AXIS_Y: return LS_UP + d;
++	case JOYSTICK_AXIS_X: return LS_LEFT + d;
++	case JOYSTICK_AXIS_RZ: return RS_UP + d;
++	case JOYSTICK_AXIS_Z: return RS_LEFT + d;
++	default: return -1;
++	}
 +}
 +
 +enum RowKind { KIND_PSP, KIND_STICK, KIND_FASTFORWARD, KIND_REWIND };
@@ -4315,34 +4338,46 @@ index 0000000..51d36fb
 +	}
 +}
 +
++// Whether the PSP's stick is the right one: its directions on the right stick's axes, or PPSSPP's
++// second stick's on the left one's (either can have directions given to rows)
 +bool RightStickIsAnalog() {
-+	std::vector<KeyMap::MultiInputMapping> mappings;
-+	KeyMap::InputMappingsFromPspButton(VIRTKEY_AXIS_X_MIN, &mappings, true);
-+	for (const auto &m : mappings) {
-+		if (m.mappings.size() == 1 && m.mappings[0].IsAxis()) {
-+			int dir = 0;
-+			if (m.mappings[0].Axis(&dir) == JOYSTICK_AXIS_Z)
-+				return true;
++	auto has = [](const int *keys, int a1, int a2) {
++		for (int i = 0; i < 4; i++) {
++			std::vector<KeyMap::MultiInputMapping> mappings;
++			KeyMap::InputMappingsFromPspButton(keys[i], &mappings, true);
++			for (const auto &m : mappings) {
++				int dir = 0;
++				if (m.mappings.size() == 1 && m.mappings[0].IsAxis() && (m.mappings[0].Axis(&dir) == a1 || m.mappings[0].Axis(&dir) == a2))
++					return true;
++			}
 +		}
-+	}
-+	return false;
++		return false;
++	};
++	static const int kPsp[4] = { VIRTKEY_AXIS_X_MIN, VIRTKEY_AXIS_X_MAX, VIRTKEY_AXIS_Y_MIN, VIRTKEY_AXIS_Y_MAX };
++	static const int kSecond[4] = { VIRTKEY_AXIS_RIGHT_X_MIN, VIRTKEY_AXIS_RIGHT_X_MAX, VIRTKEY_AXIS_RIGHT_Y_MIN, VIRTKEY_AXIS_RIGHT_Y_MAX };
++	return has(kPsp, JOYSTICK_AXIS_Z, JOYSTICK_AXIS_RZ) || has(kSecond, JOYSTICK_AXIS_X, JOYSTICK_AXIS_Y);
 +}
 +
-+// The PSP's stick (and PPSSPP's second, right-hand one) from the left or the right stick
++// The PSP's stick (and PPSSPP's second, right-hand one) from the left or the right stick: every
++// direction that no row has (one given to a row, say the right stick's to the D-pad, leaves the
++// stick, and comes back when the row lets it go)
 +void SetAnalogStick(bool right) {
-+	const int x = right ? JOYSTICK_AXIS_Z : JOYSTICK_AXIS_X, y = right ? JOYSTICK_AXIS_RZ : JOYSTICK_AXIS_Y;
-+	const int ox = right ? JOYSTICK_AXIS_X : JOYSTICK_AXIS_Z, oy = right ? JOYSTICK_AXIS_Y : JOYSTICK_AXIS_RZ;
-+	auto set = [](int key, int axis, int dir) {
-+		KeyMap::SetInputMapping(key, KeyMap::MultiInputMapping(InputMapping(DEVICE_ID_PAD_0, axis, dir)), true);
++	auto used = [](int input) {
++		for (int key : kManagedKeys) {
++			const std::vector<int> bs = ButtonsOf(key);
++			if (std::find(bs.begin(), bs.end(), input) != bs.end())
++				return true;
++		}
++		return false;
 +	};
-+	set(VIRTKEY_AXIS_X_MIN, x, -1);
-+	set(VIRTKEY_AXIS_X_MAX, x, 1);
-+	set(VIRTKEY_AXIS_Y_MIN, y, 1);
-+	set(VIRTKEY_AXIS_Y_MAX, y, -1);
-+	set(VIRTKEY_AXIS_RIGHT_X_MIN, ox, -1);
-+	set(VIRTKEY_AXIS_RIGHT_X_MAX, ox, 1);
-+	set(VIRTKEY_AXIS_RIGHT_Y_MIN, oy, 1);
-+	set(VIRTKEY_AXIS_RIGHT_Y_MAX, oy, -1);
++	// up, down, left, right
++	static const int kPsp[4] = { VIRTKEY_AXIS_Y_MAX, VIRTKEY_AXIS_Y_MIN, VIRTKEY_AXIS_X_MIN, VIRTKEY_AXIS_X_MAX };
++	static const int kSecond[4] = { VIRTKEY_AXIS_RIGHT_Y_MAX, VIRTKEY_AXIS_RIGHT_Y_MIN, VIRTKEY_AXIS_RIGHT_X_MIN, VIRTKEY_AXIS_RIGHT_X_MAX };
++	for (int d = 0; d < 4; d++) {
++		const int psp = (right ? RS_UP : LS_UP) + d, second = (right ? LS_UP : RS_UP) + d;
++		KeyMap::SetInputMapping(kPsp[d], used(psp) ? KeyMap::MultiInputMapping() : KeyMap::MultiInputMapping(MappingOf(psp)), true);
++		KeyMap::SetInputMapping(kSecond[d], used(second) ? KeyMap::MultiInputMapping() : KeyMap::MultiInputMapping(MappingOf(second)), true);
++	}
 +}
 +
 +void Saved() {
@@ -4442,11 +4477,22 @@ index 0000000..51d36fb
 +
 +	void axis(const AxisInput &axis) override {
 +		if (capturing_) {
-+			if (time_now_d() - captureAt_ > 0.2 && axis.value > 0.6f) {
-+				if (axis.axisId == JOYSTICK_AXIS_LTRIGGER)
-+					Give(sel_, PS4_L2);
-+				else if (axis.axisId == JOYSTICK_AXIS_RTRIGGER)
-+					Give(sel_, PS4_R2);
++			if (time_now_d() - captureAt_ > 0.2 && std::fabs(axis.value) > 0.6f) {
++				if (axis.axisId == JOYSTICK_AXIS_LTRIGGER) {
++					if (axis.value > 0.0f)
++						Give(sel_, PS4_L2);
++				} else if (axis.axisId == JOYSTICK_AXIS_RTRIGGER) {
++					if (axis.value > 0.0f)
++						Give(sel_, PS4_R2);
++				} else if (kRows[sel_].kind != KIND_REWIND) {
++					const int input = StickInputOf(axis.axisId, axis.value);
++					if (input >= 0) {
++						// the left stick moves the selection: held now, not a move
++						if (axis.axisId == JOYSTICK_AXIS_Y)
++							stickY_ = axis.value < 0.0f ? -1 : 1;
++						Give(sel_, input);
++					}
++				}
 +			}
 +			return;
 +		}
@@ -4499,6 +4545,7 @@ index 0000000..51d36fb
 +	void Give(int r, int b) {
 +		capturing_ = false;
 +		status_.clear();
++		const bool rightStick = RightStickIsAnalog();
 +		const std::vector<int> old = RowButtons(r);
 +		const int previous = old.empty() ? -1 : old[0];
 +		if (previous == b) {
@@ -4529,6 +4576,7 @@ index 0000000..51d36fb
 +			}
 +			status_ = StringFromFormat(M33T("Swapped with %s"), M33T(kRows[had[0]].name));
 +		}
++		SetAnalogStick(rightStick);
 +		Saved();
 +		UI::PlayUISound(UI::UISound::TOGGLE_ON);
 +	}
@@ -4550,7 +4598,7 @@ index 0000000..51d36fb
 +				KeyMap::MultiInputMapping(MappingOf(b)), replace);
 +			break;
 +		case KIND_REWIND:
-+			g_Config.iM33RewindButton = b;
++			g_Config.iM33RewindButton = b < PS4_BUTTON_COUNT ? b : -1;
 +			break;
 +		default:
 +			break;
@@ -4559,6 +4607,7 @@ index 0000000..51d36fb
 +
 +	void Clear(int r) {
 +		status_.clear();
++		const bool rightStick = RightStickIsAnalog();
 +		const RowDef &row = kRows[r];
 +		switch (row.kind) {
 +		case KIND_PSP:
@@ -4576,6 +4625,7 @@ index 0000000..51d36fb
 +		default:
 +			return;
 +		}
++		SetAnalogStick(rightStick);
 +		Saved();
 +		UI::PlayUISound(UI::UISound::TOGGLE_OFF);
 +	}
@@ -4693,6 +4743,18 @@ index 0000000..51d36fb
 +	float Glyph(UIContext &dc, DrawBuffer *db, int b, float cx, float cy, float r, float a) {
 +		const uint32_t edge = Col(0xC8CCD6, 0.9f * a), key = Col(0x1E222B, 0.97f * a), label = Col(0xE8EAF0, a);
 +		const float t = std::max(2.0f, r * 0.17f);
++		if (b >= LS_UP && b < INPUT_COUNT) {
++			// the stick's top, its L or R, an arrow at the edge it's pushed to
++			const int d = (b - LS_UP) % 4;
++			const float dx = d == 2 ? -1.0f : (d == 3 ? 1.0f : 0.0f), dy = d == 0 ? -1.0f : (d == 1 ? 1.0f : 0.0f);
++			Circle(db, cx, cy, r + 1.5f, edge);
++			Circle(db, cx, cy, r, Col(0x2A2F3A, 0.97f * a));
++			const float tip = r * 0.95f, base = r * 0.52f, half = r * 0.36f;
++			Tri(db, cx + dx * tip, cy + dy * tip, cx + dx * base - dy * half, cy + dy * base + dx * half,
++				cx + dx * base + dy * half, cy + dy * base - dx * half, Col(ACCENT, a));
++			Text(dc, b >= RS_UP ? "R" : "L", cx - dx * r * 0.12f, cy - dy * r * 0.12f, r * 0.8f, label, ALIGN_CENTER);
++			return r * 2.0f;
++		}
 +		switch (b) {
 +		case PS4_CROSS: case PS4_CIRCLE: case PS4_SQUARE: case PS4_TRIANGLE: {
 +			Circle(db, cx, cy, r + 1.5f, edge);

@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iHaiDeeZ/M33/releases/latest"><img alt="Release 1.18" src="https://img.shields.io/badge/release-1.18-9b7bff"></a>
+  <a href="https://github.com/iHaiDeeZ/M33/releases/latest"><img alt="Release 1.19" src="https://img.shields.io/badge/release-1.19-9b7bff"></a>
   <img alt="PS4 homebrew" src="https://img.shields.io/badge/PS4-homebrew-1f5fd6">
   <img alt="PSP" src="https://img.shields.io/badge/PSP-PPSSPP-48e0ff">
   <a href="LICENSE"><img alt="GPL-2.0" src="https://img.shields.io/badge/license-GPL--2.0-ff8ad4"></a>
@@ -66,6 +66,8 @@ You bring your own game backups. Nothing copyrighted is bundled: no games, no fi
 - *Settings → Controls → Button mapping* (or the quick menu's **Controls**): every PSP button, the
   stick, fast-forward and rewind, each with its PS4 button drawn as on the pad. Press Cross on one,
   then the button you want; a button already in use swaps places.
+- The sticks' directions can be given to buttons too: push the right stick up, down, left or right
+  on the D-pad's rows, and it turns the camera in games that use the D-pad for it.
 
 **A sharp picture**
 - Rendered at 4x (1920x1088, the TV's 1080p) with AMD FidelityFX's sharpening (FSR RCAS).
@@ -110,7 +112,7 @@ you own.
 | **L2 (hold)** | **Rewind** (any button you like: *Settings → Controls → Button mapping*, or the quick menu's *Controls*) |
 | R2 | Fast-forward |
 | **L3 + R3** | **Quick menu** |
-| Right stick, L3, R3 | Free to map (*Settings → Controls → Button mapping*: each PSP button with its PS4 button, as on the pad) |
+| Right stick, L3, R3 | Free to map (*Settings → Controls → Button mapping*: each PSP button with its PS4 button, as on the pad; the right stick's directions as the D-pad, for a game's camera) |
 
 ### In the quick menu
 
